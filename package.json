@@ -1,0 +1,70 @@
+{
+  "name": "dsh-compact-relay",
+  "version": "0.3.3",
+  "description": "DeepSeek Harness 上下文指示器插件：提供容量监控、压缩预览与确认、九段式交接单生成及消息锁定功能。 · Context indicator for DSH: preview-then-confirm compaction, 9-section session handoff, and pinned messages.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "!lib/client",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "TUTORIAL.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "ROADMAP.md",
+    "assets",
+    "screenshots.json"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-compaction": ">=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "compaction",
+    "handoff",
+    "context-window",
+    "context",
+    "plugin"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node scripts/build-client.mjs --check && node --check lib/client.js && node test/smoke.mjs && node test/handoff.mjs && node test/plugin-load.mjs && node test/contract.mjs && node test/compact-log.mjs",
+    "test:e2e": "node test/e2e/smoke.mjs",
+    "test:e2e:settings": "node test/e2e/settings-ui.mjs",
+    "test:e2e:compact": "node test/e2e/real-compact.mjs"
+  },
+  "author": "cfanzx <cfanzx@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cfanzx/dsh-compact-relay.git"
+  },
+  "homepage": "https://github.com/cfanzx/dsh-compact-relay#readme",
+  "bugs": {
+    "url": "https://github.com/cfanzx/dsh-compact-relay/issues"
+  }
+}
