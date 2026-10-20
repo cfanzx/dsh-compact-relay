@@ -1,0 +1,149 @@
+<div align="center">
+
+# dsh-compact-relay · 压缩接力
+
+**DeepSeek Harness 输入框上下文状态指示与会话管理插件。**
+
+简体中文 · [English](README.en.md)
+
+[![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
+[![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
+[![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
+[![version](https://img.shields.io/badge/version-0.3.2-blue)](CHANGELOG.md)
+
+</div>
+
+![指示环与悬停数据](assets/hero-ring.jpg)
+
+## 概述
+
+本插件在输入框旁提供一个 28px 的环形状态指示器，用于实时展示上下文窗口占用率与压缩评估状态，帮助用户在触发自动压缩前主动管理上下文：
+
+- **灰色**：低于最小压缩阈值，暂无需执行压缩。
+- **蓝色**：常规容量区间已满，可执行手动压缩以释放空间。
+- **琥珀色（带缺口）**：达到建议压缩点（由缺口标识），点击可预览压缩估算数据并决定是否执行。
+- **红色**：达到交接阈值，建议生成九段式交接文档并切换至新会话。
+
+插件直接挂载于现有输入框旁，默认参数已针对 DSH 0.2.x 完成适配，无需改变既有操作流程。
+
+## 核心功能
+
+### 1. 状态可视化监控
+
+指示环按压缩评估逻辑分段显色，分别标识模型或阈值判定的建议压缩点、已锁定消息位置，以及 DSH 原生自动压缩线（默认 80%）。当上下文占用越过原生自动压缩线时，整环呈红色闪烁告警。
+
+鼠标悬停可查看详细数值：已用容量、累计压缩次数、当前操作建议、压缩判断点、原生自动压缩线及已锁定消息数量。
+
+### 2. 预览与确认压缩
+
+执行 `/bc` 命令（或通过指示环菜单触发）可预先查看待压缩范围、消息条数及预计释放的容量空间，需经用户二次确认后方才执行。确认前可随时取消，未提交前不会修改任何历史记录；已锁定的消息在压缩时自动跳过。
+
+![压缩预览与确认](assets/compact-preview.jpg)
+
+### 3. 结构化会话交接
+
+执行 `/handoff` 命令可生成包含九个标准部分的交接文档（总体目标、约束条件、已完成项、当前进度、涉及文件、关键决策、已知问题、未完成项、下一步计划），并在当前工作区自动创建新会话、注入该文档并完成切换，原会话完整保留。
+
+### 4. 关键消息锁定
+
+执行 `/pin` 命令可标记压缩时必须保留的消息。被锁定的消息在指示环上显示为品红色块，在菜单列表中显示为锁定行。
+
+![指示环菜单](assets/menu.jpg)
+
+## 指示环图例说明
+
+| 指示环视觉元素 | 状态含义 |
+| --- | --- |
+| 灰色弧 | 低于最小压缩阈值，不建议压缩 |
+| 蓝色弧 | 常规容量区间已满 |
+| 琥珀色弧 | 已越过压缩判断点，适合执行压缩 |
+| 红色弧 | 已越过交接阈值，建议切换新会话 |
+| 环形缺口 | 建议压缩点（由模型评估或配置阈值决定） |
+| 紫色刻度 | DSH 原生自动压缩线（读取 `compaction-basic.thresholdRatio`，默认 80%） |
+| 品红色块 | 已锁定消息在历史记录中的分布位置 |
+| 整环红色闪烁 | 已越过原生自动压缩线，即将触发 DSH 原生自动压缩 |
+
+![越过原生自动压缩线](assets/native-alert.jpg)
+
+## 安装
+
+**环境要求**：DSH 桌面版或 `dsh web` 0.2.x（已于 0.2.1-rc.2 测试通过），Node.js 22+。
+
+```sh
+dsh plugin --profile desktop add dsh-compact-relay
+```
+
+桌面版亦可打开 **插件 → 添加插件** 输入包名安装，或直接从 GitHub 安装：
+
+```sh
+dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
+```
+
+安装完成后需重启 DSH。插件内部配置项保存后立即生效，无需重启。
+
+## 设置项说明
+
+配置入口位于 **设置 → 压缩接力**（DSH 0.2.1+ 位于账号菜单内）：
+
+- **压缩提示**：配置最小压缩线、压缩提醒线与交接提醒线，控制告警触发时机。
+- **压缩行为**：配置摘要保留份数上限、近期原文保留 Token 数及交接文档存储目录。
+- **DSH 原生自动压缩**：读取宿主当前阈值，支持开启或关闭 DSH 原生自动压缩（修改 profile 配置前自动生成备份，重启后生效）。
+- **颜色与外观**：配置五项基准色，系统将根据浅色/深色主题自动派生适配色阶。
+- **帮助**：提供指示环图例、使用说明、问题反馈入口及「再看一次初次引导」按钮。
+- **关于与危险操作**：查看版本号、配置文件路径，支持恢复出厂默认设置。
+
+![设置页](assets/settings.jpg)
+
+每项配置均附带功能定义与参数修改影响说明；帮助区内置五个动态示例环图例，随当前配色与阈值实时更新。
+
+![指示环图例教学卡片](assets/teaching-card.jpg)
+
+首次打开会话时，指示环将触发动态高亮与简要功能说明（仅自动触发一次，可通过设置页按钮重新调用）。
+
+![首次引导](assets/onboarding.jpg)
+
+## 命令列表
+
+| 命令 | 功能说明 |
+| --- | --- |
+| `/bc` | 预览压缩：显示目标范围、消息条数及预计释放容量 |
+| `/bc confirm` | 执行已预览的压缩操作 |
+| `/handoff` | 生成九段式交接文档并创建、切换至新会话 |
+| `/pin` / `/unpin` | 锁定或解锁指定消息，锁定后跳过压缩 |
+| `/bctest` | 小范围空跑测试（仅供开发调试） |
+
+## 功能边界与限制
+
+- **不替代 DSH 原生压缩机制**：原生压缩仍由 DSH 宿主控制；本插件仅负责读取阈值、显示告警并在设置页提供开关选项。
+- **不篡改提示词与模型回复**：插件仅在用户明确确认压缩或执行交接时替换对应历史记录。
+- **摘要质量取决于底层模型**：摘要生成采用九段式结构化模板并包含格式校验与单次重试机制，但最终产出质量仍受限于所选模型的能力。
+- **纯本地存储**：插件状态保存于 `~/.dsh/compact-relay.json`，交接文档保存于 `~/.dsh/handoffs/`，无任何外部数据同步。
+- **界面语言限制**：当前版本用户界面仅提供简体中文，英文界面已列入后续计划（排期未定）。
+
+## 版本状态与开源许可
+
+- **当前版本**：0.3.1（首个公开版本），已于 macOS 环境下基于 DSH 0.2.1-rc.2 完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
+- **开源许可**：采用 [MIT](LICENSE) 许可证，欢迎通过 [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues) 与 Pull Requests 提交反馈。
+
+## 参考与致谢
+
+本插件的设计参考了以下 DSH 社区插件与项目的公开实现（仅借鉴思路，未复制代码）：
+
+- [DeepSeek Harness](https://www.deepseek.com/harness/) — 插件运行的宿主平台；本插件的全部宿主能力均来自其公开导出接口。
+- [dsh-clear-mind](https://github.com/john-walks-slow/dsh-clear-mind) (MIT) — 自建替换事务与边界/锁检查的写法参照。
+- [dsh-handoff-compaction](https://github.com/knighthongyu/dsh-handoff-compaction) (MIT) — 摘要结构校验、重试与缓存对齐。
+- [dsh-compaction-policy](https://github.com/zyd232/dsh-compaction-policy) (MIT) — preset 作用域引擎的运行时门控思路。
+- [context-vista](https://github.com/GooodWei/context-vista) (MIT) — 环形图绘制与 session projections 实时订阅。
+- [dsh-session-handoff](https://github.com/WeiYe6/dsh-session-handoff) (MIT) — `/handoff` 建会话与自动切换流程。
+- [dsh-smart-compact](https://github.com/hoyyang/dsh-smart-compact) (BSD-3-Clause) — 预算测量与交接锚点设计。
+- [dsh-toolong-warning](https://github.com/Hjdd14/dsh-toolong-warning) (MIT) — 压缩计数与提醒。
+- [dsh-compaction-instant](https://github.com/TsFreddie/dsh-compaction-instant) (MIT) — 事务错误分类契约。
+- [dsh-plugin-memory](https://github.com/LittleBlackTong/dsh-plugin-memory) — 设置栏在 DSH 中的注册与渲染方式参考。
+- [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) / [dsh-market](https://github.com/dsh-market/dsh-market) — 社区插件目录与可视化市场。
+
+感谢以上作者公开实现；也感谢所有帮忙测试、提反馈的朋友。
+
+## 联系方式
+
+- **官方渠道**：GitHub 仓库 <https://github.com/cfanzx/dsh-compact-relay> 与 [Issues](https://github.com/cfanzx/dsh-compact-relay/issues)（问题反馈、功能建议、发布公告）。
+- **开发者邮箱**：cfanzx@136.com（合作、安全问题，以及其他不便公开讨论的事项）。
