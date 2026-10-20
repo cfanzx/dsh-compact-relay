@@ -1,0 +1,30 @@
+# 依赖（不要在仓库内安装；安装请到 /tmp 或 profile）
+node_modules/
+.pnpm-store/
+
+# 打包/测试产物
+*.tgz
+*.zip
+npm-debug.log*
+pnpm-debug.log*
+coverage/
+
+# 本地配置/密钥
+.env
+.env.*
+*.local
+*.pem
+*.key
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# 注意：lib/ 必须提交（lib/client.js 是构建产物，npm/GitHub 安装需要）
+#       不要忽略 lib/client.js、lib/client/、scripts/build-client.mjs、cordis.patch.yml
+
+# 内部交接记录（含开发会话 id / 进度），不进公开仓库；随源码归档包单独保存
+HANDOFF.md
