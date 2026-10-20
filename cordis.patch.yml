@@ -1,0 +1,6 @@
+# Bundle patch for dsh-compact-relay: inserts its plugin row into the profile
+# roster. Applied as a profile bundle layer (the `dsh.bundle.patch` manifest
+# field); installed via the profile package.json dependencies + dsh.profile.bundles.
+- insert:
+    - id: compact-relay
+      name: 'dsh-compact-relay'
