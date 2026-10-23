@@ -25,21 +25,27 @@ lib/adapters/         入口适配层：commands.js / http.js / tool.js
    │                  只做协议转换（参数、命令结果、HTTP JSON），不做判断。
 lib/actions/          动作层：state / better-compact / handoff / test-compact / lock /
    │                  inflight（进行中登记，M6 取消）/ pin（M6 钉住）/ compress-hint（压缩判断）
+   │                  + 共享执行件：support（信号/inflight/取消收口）、compact-run（压缩执行流程）
    │                  每个动作只写一次，被所有入口共用。
 lib/dsh/              能力封装层：pressure / session-view / summarizer / route / prefix /
    │                  stream / handoff-writer / compact-transaction / idle / sessions /
    │                  site-info（M6 现场快照）/ handoff-files（M6 交接文档只读）
+   │                  + 共享件：compaction-pair（事件配对扫描）、model-task（模型调用装配/收尾）
    │                  唯一 import @deepseek-ai/* 的地方；未来 DSH 升级只改这里。
 lib/core/             纯函数层：policy / ranges / prompts / handoff-doc /
    │                  validate-summary / validate-handoff / placeholders / pins / errors
+   │                  + 共享件：object（isPlainObject）、tokens（token 口径/遮罩求和）
    │                  不 import 任何 DSH 包，可单测、可裸跑。
 lib/config.js         默认值 + 配置合并（阈值、颜色、保留量、dev 开关、目录）。
 lib/client.js         浏览器半的构建产物（DSH 客户端 bundle 契约，见 §5）；不要手改。
-lib/client/           浏览器半源码片段（按文件名排序拼接，scripts/build-client.mjs）。
+lib/client/           浏览器半源码片段（按文件名排序拼接，scripts/build-client.mjs）；
+                      15-shared.js 是跨片段共享件（环几何/浮层材质/keyframes）。
 ```
 
 **硬规矩**：依赖只能往一个方向流（adapters → actions → dsh → core）。
 core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案；actions 里不许直接碰 `ctx` 服务。
+共享件也不能破坏分层：`core/object.js`、`core/tokens.js` 是纯函数；`dsh/compaction-pair.js`、
+`dsh/model-task.js` 只消费 dsh/core；`actions/support.js`、`actions/compact-run.js` 只被 actions 调用。
 
 ---
 
@@ -58,7 +64,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | 文件 | 职责 |
 |---|---|
 | `lib/client.js` | 构建产物（DSH `exports["./client"]` 指向它；仓库提交、发布包只带它） |
-| `lib/client/{00-header..90-apply}.js` | 十个有序源码片段（indicator / handoff / settings / apply 等），`scripts/build-client.mjs` 按序拼成 `client.js` |
+| `lib/client/{00-header..90-apply}.js` | 有序源码片段（indicator / handoff / settings / apply 等），`scripts/build-client.mjs` 按序拼成 `client.js`；`15-shared.js` 是跨片段共享件（环几何 / 原生线 / 浮层材质 / keyframes） |
 | `scripts/build-client.mjs` | 零依赖构建；`npm test` 第一步 `--check`，片段改了没重建直接红 |
 
 ### core —— 纯函数（零 DSH 依赖）
@@ -82,6 +88,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `core/relay.js` | `RELAY_RECORD_TYPE`, `latestRelayRecord` | 接力链记录（parent/child/index/path） |
 | `core/colors.js` | `DEFAULT_BASE`, `paletteForScheme` | 颜色纯数学：HSL 明度派生 + WCAG 对比度 ≥3:1、归一化、旧结构兼容 |
 | `core/errors.js` | `actionError`, `errorText`, `toActionResult` | 错误 → 用户可读文案的唯一映射（含原因附带与截断） |
+| `core/object.js` | `isPlainObject` | **普通对象判定的唯一来源**（config 合并 / 设置文件信封 / actions 深合并共用；非 null、typeof object、非数组） |
+| `core/tokens.js` | `tokenOf`, `sumShadowedTokens` | **token 口径唯一来源**：节点取 `heuristicTokens ?? tokens`；一段被遮罩 seq 的 token 总和（选段尾部预算、state 可压范围、压缩预览/执行共用） |
 
 ### dsh —— 能力封装
 
@@ -105,6 +113,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/handoff-files.js` | `listHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限） |
 | `dsh/session-files.js` | `changedFilesOf` | 从会话日志收集写/改过的文件（交接单程序段） |
 | `dsh/compaction-log.js` | `recentCompactions` | 压缩历史读侧（A6：配对 summary/end/replace） |
+| `dsh/compaction-pair.js` | `scanCompactionLog` | **压缩事件配对扫描唯一来源**：一次扫描日志返回 summaries / ends(compactionId→end.data) / replaceByCoveredSeq；`session-view.countSummaries` 与 `compaction-log` 共用 |
+| `dsh/model-task.js` | `prepareModelCall`, `cacheAlignedControls`, `callModelAttempt`, `modelAttemptResult` | **模型任务公共装配/收尾**：会话→路由→预算→推理档、cache 对齐参数（不继承 reasoningEffort）、单次 callStream+finishProblem、结果元信息；`summarizer` 与 `handoff-writer` 共用（各自保留校验/重试策略） |
 | `dsh/settings-file.js` | `readSettingsFile`, `writeSettingsFile` | 设置文件读写（`$DSH_HOME/compact-relay.json`，`{v:1,config}` 信封、原子写） |
 | `dsh/relay.js` | `readRelayRecord`, `writeRelayRecord` | 接力链读写接缝 |
 
@@ -124,6 +134,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `actions/pin.js` | `pinLastTurn`, `pinByIndex`, `unpinAll`, `listPins`, `togglePin` | 锁定/解锁（写 plugin record、候选列表） |
 | `actions/compress-hint.js` | `markCompressHint` | 记录模型「这里适合压缩」的判断（最小线/压缩线之间才允许） |
 | `actions/native-compaction.js` | `nativeCompactionInfo`, `setNativeAutoCompactionEnabled` | DSH 原生自动压缩：读配置/开关包装（写 profile 前备份） |
+| `actions/compact-run.js` | `runCompaction` | **压缩执行流程唯一来源**：flush/estimateMessage 装配 → runIdle（用户取消⊕idle 信号）→ replaceRangeWithSummary + summarize；`better-compact` 与 `test-compact` 共用（差异只在选段/指令/校验参数） |
+| `actions/support.js` | `combinedSignal`, `beginInflight`, `finishInflight`, `cancelErrorOf` | **动作层胶水**：AbortSignal 组合、inflight 登记/注销、取消收口（cancelled 与 commit/persistence 不混淆） |
 
 ### adapters —— 入口适配（只做协议转换）
 
@@ -222,10 +234,17 @@ DSH 客户端加载器要求 `package.json exports["./client"]` 指向**已构�
 （运行时没有打包器；缺文件会报 `client-modules: client bundle not found`）。
 
 A8（2026-10-20）之后单文件契约不变，但**源码不再是单文件**：`lib/client/*.js` 是按文件名
-排序的片段（00-header / 01-shell-open / 10-runtime / 12-colors / 14-theme-hook / 20-format /
-30-indicator / 40-handoff / 50-settings / 90-apply），由 `scripts/build-client.mjs`（零依赖）
-拼成 `lib/client.js`。改 client 只改片段，改完运行 `node scripts/build-client.mjs`；
-`npm test` 第一步是 `node scripts/build-client.mjs --check`，改了片段没重建会直接红。
+排序的片段（00-header / 01-shell-open / 10-runtime / 12-colors / 13-ring / 14-theme-hook /
+15-shared / 20-format / 30-indicator / 40-handoff / 50-settings / 90-apply），由
+`scripts/build-client.mjs`（零依赖）拼成 `lib/client.js`。改 client 只改片段，改完运行
+`node scripts/build-client.mjs`；`npm test` 第一步是 `node scripts/build-client.mjs --check`，
+改了片段没重建会直接红。
+
+`15-shared.js` 是跨片段共享件：环上点坐标/弧线 path（`ringPoint` / `ringArcPath`）、
+DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪烁 keyframes
+（`NATIVE_ALERT_CSS`）、浮层材质（`panelChrome`，BUG-001 的主题 token 口径）。片段按
+文件名排序拼接，函数声明提升 → 后面的 `30-indicator` / `50-settings` 可直接调用；
+常量在组件渲染（工厂体执行完之后）才被使用，不存在 TDZ 问题。
 
 颜色纯数学（HSL 派生 + WCAG 对比度）已上移到 `core/colors.js`：host 在 state/settings view
 里下发浅/深两套派生结果（`colors.palette`），浏览器半只按界面明暗挑一套；设置页「改了还没
@@ -289,6 +308,13 @@ A8（2026-10-20）之后单文件契约不变，但**源码不再是单文件**�
 | 配对平衡 / checkpoint 判定 | DSH 包（import） | 自己复写 |
 | client 的阈值/颜色 | host `readState` | client 自己拿 token 算 |
 | 压缩判断记录类型 / 新鲜度判定 | `core/compress-hint.js` | state、工具、测试各写一份 plugin record 判定 |
+| 普通对象判定（`isPlainObject`） | `core/object.js` | config/设置文件/actions 各写一份 |
+| token 口径 / 遮罩 token 求和 | `core/tokens.js` | 选段、state、预览、执行各写一遍 `heuristicTokens ?? tokens` |
+| summary/end/replace 配对扫描 | `dsh/compaction-pair.js` | countSummaries 与压缩历史各扫一遍日志 |
+| 模型调用前置 / cache 对齐 / callStream+finish 装配 | `dsh/model-task.js` | summarizer 与 handoff-writer 各写一份 |
+| 压缩执行流程（idle→信号→事务→摘要） | `actions/compact-run.js` | 正式精压与 `/bctest` 各写一遍事务参数 |
+| AbortSignal 组合 / inflight 登记 / 取消收口 | `actions/support.js` | 每个动作自己 `inflight.begin/finish` + 判 commit/persistence |
+| client 环几何 / 原生线 / 浮层材质 | `lib/client/15-shared.js` | 指示灯与设置页教学图各画一遍、7 处浮层各抄 5 行样式 |
 
 ---
 
@@ -399,24 +425,27 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 │  ├─ settings-store.js         # A9 兼容 shim
 │  ├─ client.js                 # 构建产物（禁止手改；源码见 lib/client/）
 │  ├─ client/                   # 浏览器半源码片段（按文件名排序拼接）
-│  │  ├─ 00-header.js / 01-shell-open.js / 10-runtime.js / 12-colors.js
-│  │  ├─ 14-theme-hook.js / 20-format.js / 30-indicator.js
-│  │  ├─ 40-handoff.js / 50-settings.js / 90-apply.js
+│  │  ├─ 00-header.js / 01-shell-open.js / 10-runtime.js / 12-colors.js / 13-ring.js
+│  │  ├─ 14-theme-hook.js / 15-shared.js（跨片段共享：环几何/浮层材质/keyframes）
+│  │  ├─ 20-format.js / 30-indicator.js / 40-handoff.js / 50-settings.js / 90-apply.js
 │  ├─ core/                     # 纯函数
 │  │  ├─ config-schema.js colors.js errors.js policy.js ranges.js prompts.js
 │  │  ├─ handoff-spec.js handoff-doc.js handoff-facts.js readiness.js
 │  │  ├─ validate-summary.js validate-handoff.js placeholders.js
 │  │  ├─ compress-hint.js ring.js pins.js relay.js
+│  │  ├─ object.js（isPlainObject）/ tokens.js（token 口径）
 │  ├─ dsh/                      # 能力封装（唯一 import @deepseek-ai/* 的地方）
 │  │  ├─ engine.js pressure.js session-view.js select-range.js route.js prefix.js
 │  │  ├─ stream.js llm-call.js summarizer.js handoff-writer.js
 │  │  ├─ compact-transaction.js idle.js sessions.js
 │  │  ├─ state-hub.js site-info.js handoff-files.js session-files.js
-│  │  ├─ compaction-log.js settings-file.js relay.js native-compaction.js
+│  │  ├─ compaction-log.js compaction-pair.js settings-file.js relay.js native-compaction.js
+│  │  ├─ model-task.js（模型任务公共装配/收尾）
 │  ├─ actions/                  # 动作层
 │  │  ├─ state.js better-compact.js test-compact.js handoff.js
 │  │  ├─ handoff-docs.js compact-diff.js settings.js
 │  │  ├─ lock.js inflight.js pin.js compress-hint.js native-compaction.js
+│  │  ├─ compact-run.js（压缩执行流程）/ support.js（信号/inflight/取消收口）
 │  └─ adapters/                 # 入口适配
 │     ├─ commands.js / http.js / tool.js
 └─ test/
