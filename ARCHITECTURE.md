@@ -134,7 +134,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `actions/pin.js` | `pinLastTurn`, `pinByIndex`, `unpinAll`, `listPins`, `togglePin` | 锁定/解锁（写 plugin record、候选列表） |
 | `actions/compress-hint.js` | `markCompressHint` | 记录模型「这里适合压缩」的判断（最小线/压缩线之间才允许） |
 | `actions/native-compaction.js` | `nativeCompactionInfo`, `setNativeAutoCompactionEnabled` | DSH 原生自动压缩：读配置/开关包装（写 profile 前备份） |
-| `actions/compact-run.js` | `runCompaction` | **压缩执行流程唯一来源**：flush/estimateMessage 装配 → runIdle（用户取消⊕idle 信号）→ replaceRangeWithSummary + summarize；`better-compact` 与 `test-compact` 共用（差异只在选段/指令/校验参数） |
+| `actions/compact-run.js` | `runCompaction` | **压缩执行流程唯一来源**：flush/estimateMessage 装配 → runIdle（用户取消⊕idle 信号）→ replaceRangeWithSummary + summarize；`better-compact` 与 `test-compact` 共用（差异只在选段/指令/校验参数/超时来源：正式精压传 `cfg.timeouts.llmMs`，`/bctest` 不传=180s 默认） |
 | `actions/support.js` | `combinedSignal`, `beginInflight`, `finishInflight`, `cancelErrorOf` | **动作层胶水**：AbortSignal 组合、inflight 登记/注销、取消收口（cancelled 与 commit/persistence 不混淆） |
 
 ### adapters —— 入口适配（只做协议转换）
