@@ -242,6 +242,12 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(relay.baseTitle, '原会话标题');
   assert.equal(relay.path, result.path);
   assert.equal(relay.title, '交接第 1 次：原会话标题');
+  // 0.4 P2-2：接力链元数据补全（canonical 字段 + 本地 ISO 时间），首次交接 ordinal=1。
+  assert.equal(relay.parentId, 'source-session');
+  assert.equal(relay.ordinal, 1, '首次交接 ordinal=1');
+  assert.equal(Number.isInteger(relay.at), true);
+  assert.equal(typeof relay.atIso, 'string', '交接记录要带可读的本地时间');
+  assert.equal(doc.includes('- 交接序号：第 1 次交接'), true, '交接单头要写「第 N 次交接」');
   assert.equal(result.message.includes('#child=' + result.childId), true, '正文要带结构化 childId 兜底');
 
   // 6) 交接文档作为新会话第一条消息注入，并起了第一轮
@@ -280,6 +286,104 @@ test('A1b 交接预览：九段草稿 + 就绪清单，不写盘/不建会话/�
   assert.equal(record.createCalls.length, 0, '预览不建会话');
   assert.equal(session.log.some((event) => event.type === 'compaction/start'), false, '预览不压缩');
   assert.deepEqual(record.llmCalls.map((call) => call.kind), ['handoff'], '只调一次交接文档生成');
+});
+
+test('P2-1 交接预览可编辑：只让「约束 / 下一步」生效，程序段不可改', async () => {
+  // 预览接口暴露两段可编辑视图（客户端只渲染这两段）。
+  const previewSession = baseSourceSession();
+  const previewContext = makeCtx();
+  const previewDeps = createPluginDeps({
+    ctx: previewContext.ctx,
+    engine: previewContext.engine,
+    handoffDir: createTmpDir('relay-p21-preview-'),
+  });
+  const preview = await previewHandoff(previewDeps, { agent: createAgent(previewSession) });
+  assert.deepEqual(preview.editable.titles, ['约束', '下一步'], '只允许编辑两段');
+  assert.equal(preview.editable.sections['约束'].includes('约束的内容'), true, '预览带上当前原文');
+  assert.equal(preview.editable.note.includes('不能改'), true, '要说明程序生成段不可改');
+  assert.equal(preview.ordinal, 1, 'P2-2：预览也知道本次是第几次交接');
+
+  // 确认交接时带编辑 → 落盘内容用编辑后的两段；程序段/其它模型段原样。
+  const session = baseSourceSession();
+  const { ctx, engine } = makeCtx();
+  const handoffDir = createTmpDir('relay-p21-');
+  const deps = createPluginDeps({ ctx, engine, handoffDir });
+  const result = await handoff(deps, {
+    agent: createAgent(session),
+    commandId: 'cmd-handoff',
+    edits: { 约束: '用户补充的约束：禁止修改公开 API', 下一步: '用户补充的下一步：先跑 npm test 再提交' },
+  });
+  const doc = fs.readFileSync(result.path, 'utf8');
+  assert.equal(doc.includes('## 约束\n用户补充的约束：禁止修改公开 API'), true, '编辑后的约束要写进交接单');
+  assert.equal(doc.includes('## 下一步\n用户补充的下一步：先跑 npm test 再提交'), true);
+  assert.equal(doc.includes('约束的内容：完成验证'), false, '原约束被覆盖');
+  assert.equal(doc.includes('总体目标的内容'), true, '不可编辑段保持模型原文');
+  assert.equal(doc.includes('锁定消息：'), true, '程序段（当前进度）保持程序生成内容');
+
+  // 非法字段（程序段）→ code=edits，且在压缩/写盘之前拒绝（零副作用）。
+  const badDir = createTmpDir('relay-p21-bad-');
+  const badSession = baseSourceSession();
+  const bad = makeCtx();
+  const badDeps = createPluginDeps({ ctx: bad.ctx, engine: bad.engine, handoffDir: badDir });
+  await assert.rejects(
+    handoff(badDeps, { agent: createAgent(badSession), edits: { 当前进度: '伪造进度' } }),
+    (error) => {
+      assert.equal(error.code, 'edits');
+      assert.equal(error.message.includes('只能编辑'), true, '错误信息要说明只能改两段');
+      return true;
+    },
+  );
+  assert.equal(fs.readdirSync(badDir).length, 0, '非法编辑不写盘');
+  assert.equal(badSession.log.some((event) => event.type === 'compaction/start'), false, '非法编辑零副作用（不压缩）');
+
+  // 超长拒绝（不静默截断）。
+  await assert.rejects(
+    handoff(badDeps, { agent: createAgent(badSession), edits: { 约束: 'x'.repeat(4001) } }),
+    (error) => error.code === 'edits',
+  );
+
+  // 空编辑 = 用生成原文（回落，不覆盖）。
+  const emptySession = baseSourceSession();
+  const emptyContext = makeCtx();
+  const emptyDeps = createPluginDeps({
+    ctx: emptyContext.ctx,
+    engine: emptyContext.engine,
+    handoffDir: createTmpDir('relay-p21-empty-'),
+  });
+  const emptyResult = await handoff(emptyDeps, { agent: createAgent(emptySession), edits: { 约束: '   ' } });
+  const emptyDoc = fs.readFileSync(emptyResult.path, 'utf8');
+  assert.equal(emptyDoc.includes('## 约束\n- 约束的内容：完成验证'), true, '空编辑回落生成原文');
+});
+
+test('P2-2 接力链元数据：链式第 2 次交接 ordinal=2、parent 指向正确', async () => {
+  const session = baseSourceSession(); // id=source-session，模拟「从子会话继续交接」
+  // 上一次交接记录（0.3 旧字段形状也兼容）：本会话由 session-gp 交接而来，是第 1 次交接。
+  session.log.push({
+    type: 'plugin:compact-relay/relay',
+    ignorable: true,
+    seq: session.log.length,
+    data: {
+      parentSessionId: 'session-gp',
+      childId: 'source-session',
+      index: 1,
+      baseTitle: '原会话标题',
+      at: 1,
+    },
+  });
+  const { ctx, engine } = makeCtx();
+  const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-p22-') });
+  const result = await handoff(deps, { agent: createAgent(session), commandId: 'cmd-handoff-2' });
+
+  const relays = session.log.filter((event) => event.type === 'plugin:compact-relay/relay');
+  assert.equal(relays.length, 2, '父会话里应追加第二条接力链记录');
+  const latest = relays.at(-1).data;
+  assert.equal(latest.parentId, 'source-session', 'parent 指向本次交接的父会话');
+  assert.equal(latest.childId, result.childId, 'child 指向新建的子会话');
+  assert.equal(latest.ordinal, 2, '链式第 2 次交接 ordinal=2');
+  assert.equal(latest.index, 2, '旧字段同步（兼容 0.3 读法）');
+  assert.equal(typeof latest.atIso, 'string', '带可读本地时间');
+  const doc = fs.readFileSync(result.path, 'utf8');
+  assert.equal(doc.includes('- 交接序号：第 2 次交接'), true, '交接单头显示第 2 次交接');
 });
 
 test('M3：文档结构不合格 → 带 recovery 重试一次，仍不合格则拒绝且不建会话', async () => {

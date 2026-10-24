@@ -413,7 +413,8 @@ await new Promise((resolve) => setTimeout(resolve, 20));
 assert.equal(crossSite.status, 403);
 const tooLarge = callRoute(host, '/api/compact-relay-action', {
   method: 'POST',
-  body: JSON.stringify({ action: 'compact', sessionId: 'session-no-agent', pad: 'x'.repeat(9000) }),
+  // 0.4 P2-1：action 路由 body 上限放宽到 48KB（要装下两段编辑），超限夹具同步放大到 56KB。
+  body: JSON.stringify({ action: 'compact', sessionId: 'session-no-agent', pad: 'x'.repeat(56 * 1024) }),
   headers: { 'content-type': 'application/json' },
 });
 await new Promise((resolve) => setTimeout(resolve, 20));

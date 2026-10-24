@@ -9,6 +9,28 @@
 - **修复**：① `state.js` 显式传 `deps.engine?.isCompactCheckpointSource`；② `session-view.js` 的 `lastCheckpointSurfaceIdx` / `lastCheckpointSurfaceSeq` 给 `isCheckpointSource` 加默认值 `engine.isCompactCheckpointSource`（dsh→dsh 同层、显式传参优先；纯 node 单测不注册 DSH 包解析钩子时安全降级为「无 checkpoint」，不抛）；③ 回归测试加进 `test/state-passive.mjs`（旧 hint + 更新的 checkpoint → `compressHint: null`；hint 比 checkpoint 新 → 保留）。
 - **影响面**：只影响「判断记录新鲜度」的显示与 cue 抑制；不改压缩/交接行为、不改拒绝条件、不动 client。此 bug 自 0.3.1 起存在，随 0.4.0 修复（不回溯 0.3.6）。
 
+### P2-3 原生自动压缩「真实触发线」（按路由容量算，不再只显示窗口比例）
+
+- **问题**：指示灯一直把 `compaction-basic` 的 `thresholdRatio`（默认 80%）当触发线显示，但 DSH 实际按 token 数触发：`thresholdTokens = floor(min(W × rate, W − 输出预留 − headroom))`，触发点 = `thresholdTokens / W`。当路由请求给输出预留较多或 `headroomTokens` 被改过时，真实触发点会明显低于 80%（作者在 Windows 真实会话里问过「原生压缩线为什么降到了 50」）。
+- **修复**：新增 `lib/core/native-line.js`（纯函数，公式与 dsh-compaction-basic 源码一致）；`lib/dsh/native-compaction.js` 增读 `config.headroomTokens`（默认 65536）与嵌套 `modelPolicies`（按 provider+model 精确覆盖 `thresholdRatio`/`headroomTokens`，支持列表与映射两种 YAML 写法；**BUG-012 保持**：嵌套值不会变成全局线）；`lib/dsh/pressure.js` 新增 `routeBudgetOf()`：输出预留 = `session.requestHeader().config.maxTokens ?? 适配器 defaultMaxTokens ?? 0`，窗口复用 `llm.resolveModelInfo` 缓存；`readState` 的 `native` 新增 `ratio/thresholdTokens/contextWindow/reservedCompletionTokens/headroomTokens/overridden/route/unavailable`（`thresholdRatio` 仍下发生效比例，老客户端可回落；算不出时 `ratio=null + unavailable=原因`）。
+- 客户端：环上原生刻度/越线闪烁改用真实线；悬停标题显示 `原生自动压缩线 X%（thresholdTokens / 窗口，provider/model，按路由覆盖）`；首次引导文案同步。
+- 测试：`test/native-line.mjs`（公式 80% vs 67.8%、边界/无预算、解析与 BUG-012 回归、路由覆盖匹配、readState 下发与老字段兼容）；并入 `npm test`。
+- 不改任何触发/拒绝条件，只改「显示与数据」；版本仍 0.3.6，未发布。
+
+### P2-1 交接预览「两段可编辑」（只允许 约束 / 下一步）
+
+- 预览接口新增 `editable: { titles: ['约束','下一步'], maxChars: 4000, note, sections }` 与 `ordinal`（第 N 次交接）；客户端交接预览卡只给这两段 textarea（`data-cr-handoff-edit`），其余段只读并显示「程序生成段不可改」。
+- 确认时客户端只提交「用户真的改过且非空」的段；宿主在压缩/写盘前校验：非法字段（程序生成段 / 拼错段名 / 非对象）→ `code='edits'`（HTTP 400，消息点名不能改的段）；单段 >4000 字符拒绝（不静默截断）；空值/未改回落重新生成的原文。应用方式：生成九段后覆盖这两段再渲染（`composeHandoffText` 仍按九段固定顺序），程序段永远来自程序/模型。
+- 九段结构不变；必须用户点「确认交接」才写盘（预览/校验过程不写盘）。action 路由 body 上限从 8KB 放宽到 48KB（容纳两段编辑）。
+- 测试：`test/handoff-p2.mjs`（白名单/空值/超长/非法字段/九段顺序/客户端入口静态守卫）+ `test/handoff.mjs` 集成（编辑后交接单落盘内容生效、程序段被拒且零副作用、空编辑回落）。
+
+### P2-2 接力链元数据补全
+
+- relay 记录 canonical 字段补齐：`parentId` / `childId` / `ordinal` / `at`（ms）/ `atIso`（本地 ISO）；0.3 旧字段 `parentSessionId` / `index` 继续写入，读侧兼容旧记录并补齐 canonical 字段。
+- 链式序号：首次交接 `ordinal=1`；从子会话继续交接 `ordinal=2` 且 `parentId` 指向真正父会话；下一次交接标题序号改用 `ordinal` 推导。
+- 交接单头新增 `- 交接序号：第 N 次交接`（预览草稿里也能看到）；接力链视图留 0.5，不做。
+- 测试：`test/handoff-p2.mjs`（canonical/旧记录兼容）+ `test/handoff.mjs`（首次 ordinal=1 + 文档头、链式第 2 次 ordinal=2 / parent 正确）。
+
 ### P1-3 压缩/交接可审计流水（轻账本）+ 设置页累计数字
 
 - 新增轻账本 `~/.dsh/compact-relay-ledger.jsonl`（JSONL，一行一条，schema `dcr-ledger/v1`）：每次**压缩/交接成功**后追加一条——`kind`、本地时间、耗时 ms、压前/压后 tokens + ratio、腾出 tokens、pin 命中（`inRange/total`）、交接单落盘路径（仅路径）与 `childId`；交接内部那次压缩不重复记账（一次 `/handoff` 一条）。
