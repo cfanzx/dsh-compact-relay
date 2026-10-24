@@ -99,6 +99,7 @@ assert.deepEqual(
   host.routes.map((route) => route.path).sort(),
   [
     '/api/compact-relay-action',
+    '/api/compact-relay-diagnostics',
     '/api/compact-relay-diff',
     '/api/compact-relay-handoffs',
     '/api/compact-relay-settings',
@@ -273,12 +274,36 @@ assert.equal(resetBody.config.colors.base.idle, '#6F7680');
 assert.equal(resetBody.settingsError, null, 'A4：恢复默认后清掉设置文件错误');
 assert.equal(fs.existsSync(path.join(dshHome, 'compact-relay.json')), false, '恢复默认要删掉用户覆盖文件');
 
+// ---- 0.4 P0-2：只读诊断端点（GET only / 白名单产物 / 脱敏 / 短字段 issueUrl）----
+const diagRes = await callRouteAsync(host, '/api/compact-relay-diagnostics?sessionId=session-live');
+assert.equal(diagRes.status, 200);
+assert.equal(diagRes.body.ok, true);
+assert.equal(diagRes.body.schema, 'dcr-diagnostics/v1');
+assert.equal(diagRes.body.json.schema, 'dcr-diagnostics/v1');
+assert.equal(typeof diagRes.body.markdown, 'string');
+assert.equal(diagRes.body.markdown.includes('诊断信息'), true, 'Markdown 要有人读标题');
+assert.equal(typeof diagRes.body.issueUrl, 'string');
+assert.equal(diagRes.body.issueUrl.includes('template=bug_report.yml'), true, 'issue URL 要预填 bug 模板');
+assert.equal(diagRes.body.issueUrl.length < 7500, true, 'issue URL 必须 < 7500 字符');
+assert.equal(diagRes.body.json.runtime.dshVersion, null, '拿不到 DSH 版本就 null，不猜');
+assert.notEqual(diagRes.body.json.state, null, '有 live session 时 state 不应为 null');
+const diagJsonText = JSON.stringify(diagRes.body.json);
+assert.equal(diagJsonText.includes('session-live'), false, '产物里不能出现 sessionId 值');
+assert.equal(diagJsonText.includes(dshHome), false, '产物里不能出现任何本机路径');
+const diagNoSession = await callRouteAsync(host, '/api/compact-relay-diagnostics');
+assert.equal(diagNoSession.status, 200);
+assert.equal(diagNoSession.body.json.state, null, '无活动会话时 state 整块为 null');
+const diagPost = callRoute(host, '/api/compact-relay-diagnostics', { method: 'POST' });
+await sleep(60);
+assert.equal(diagPost.status, 405, '诊断端点只读：非 GET 必须 405');
+
 // ---- 2026-10-20 安全：所有插件端点必须先过宿主 connection 鉴权（P0）----
 host.setConnectionRejection(401);
 const authCases = [
   ['/api/compact-relay-state', { method: 'GET' }],
   ['/api/compact-relay-handoffs', { method: 'GET' }],
   ['/api/compact-relay-settings', { method: 'GET' }],
+  ['/api/compact-relay-diagnostics', { method: 'GET' }],
   ['/api/compact-relay-action', { method: 'POST', body: JSON.stringify({ action: 'cancel', sessionId: 'session-live' }) }],
 ];
 for (const [path, opts] of authCases) {
@@ -528,8 +553,9 @@ console.log('PASS  /api/compact-relay-stream：SSE 建流 + 首帧状态 + 未�
 console.log('PASS  action 端点：sessionId 缺失/类型错/非法 JSON/跨站/超大 body 均被拒；无会话时 409（含 preview/cancel/pin-toggle）');
 console.log('PASS  /api/compact-relay-handoffs：列表/读取/非法文件名拒绝 + total/加载更多（BUG-006）');
 console.log('PASS  /api/compact-relay-settings：读取/保存热生效/非法比例/跨站/恢复默认');
+console.log('PASS  /api/compact-relay-diagnostics：只读 GET/鉴权/白名单产物/无会话 state=null/非 GET 405');
 console.log('PASS  /bc：预览/confirm 参数校验 + input.hint');
 console.log('PASS  /pin、/unpin：钉住最近一轮 / 列表 / 清空');
 console.log('PASS  /bctest：无 agent / 参数错误都返回 error');
 console.log('PASS  /handoff：无 agent / 参数错误都返回 error');
-console.log('\n14/14 passed');
+console.log('\n15/15 passed');

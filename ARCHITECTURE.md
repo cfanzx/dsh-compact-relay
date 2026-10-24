@@ -26,11 +26,14 @@ lib/adapters/         入口适配层：commands.js / http.js / tool.js / prompt
 lib/actions/          动作层：state / better-compact / handoff / test-compact / lock /
    │                  inflight（进行中登记，M6 取消）/ pin（M6 钉住）/ compress-hint（压缩判断）
    │                  + 共享执行件：support（信号/inflight/取消收口）、compact-run（压缩执行流程）
+   │                  + diagnostics（0.4 P0-2 诊断组装：取数并裁白名单，交给 dsh 层构造）
    │                  每个动作只写一次，被所有入口共用。
 lib/dsh/              能力封装层：pressure / session-view / summarizer / route / prefix /
    │                  stream / handoff-writer / compact-transaction / idle / sessions /
    │                  site-info（M6 现场快照）/ handoff-files（M6 交接文档只读）
    │                  + 共享件：compaction-pair（事件配对扫描）、model-task（模型调用装配/收尾）
+   │                  + 诊断（0.4 P0-2）：diag-counters（进程内计数/耗时/错误码）/
+   │                    diagnostics（诊断包构造：白名单 + 脱敏 + 尺寸上限；零 IO 零网络）
    │                  唯一 import @deepseek-ai/* 的地方；未来 DSH 升级只改这里。
 lib/core/             纯函数层：policy / ranges / prompts / handoff-doc /
    │                  validate-summary / validate-handoff / placeholders / pins / errors /
@@ -120,6 +123,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/model-task.js` | `prepareModelCall`, `cacheAlignedControls`, `callModelAttempt`, `modelAttemptResult` | **模型任务公共装配/收尾**：会话→路由→预算→推理档、cache 对齐参数（不继承 reasoningEffort）、单次 callStream+finishProblem、结果元信息；`summarizer` 与 `handoff-writer` 共用（各自保留校验/重试策略） |
 | `dsh/settings-file.js` | `readSettingsFile`, `writeSettingsFile` | 设置文件读写（`$DSH_HOME/compact-relay.json`，`{v:1,config}` 信封、原子写） |
 | `dsh/relay.js` | `readRelayRecord`, `writeRelayRecord` | 接力链读写接缝 |
+| `dsh/diag-counters.js` | `createDiagCounters`, `errorCodeOf`, `localIso` | **0.4 P0-2 进程内诊断计数**：压缩/交接成功失败、最近 20 个耗时样本的 p50/p95、按 `(code, phase)` 聚合的最近 20 条错误码（只收 code/phase/at/count，**不收 message**）、锁定次数；纯内存零 IO，重启清零 |
+| `dsh/diagnostics.js` | `buildDiagnostics`, `renderIssueUrl`, `assertNoLeak`, `DIAG_SCHEMA` | **0.4 P0-2 诊断包构造**：逐字段 allowlist + 正则脱敏（命中替换为 `[REDACTED]`，只记数量）+ 尺寸上限（JSON ≤64KB / errors ≤20 条 / 单条 ≤200 字符），输出 `dcr-diagnostics/v1` JSON 与同源 Markdown；issue URL 只预填短字段（<7500）；零 IO 零网络 |
 
 ### actions —— 动作层（每个动作唯一实现）
 
@@ -139,13 +144,14 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `actions/native-compaction.js` | `nativeCompactionInfo`, `setNativeAutoCompactionEnabled` | DSH 原生自动压缩：读配置/开关包装（写 profile 前备份） |
 | `actions/compact-run.js` | `runCompaction` | **压缩执行流程唯一来源**：flush/estimateMessage 装配 → runIdle（用户取消⊕idle 信号）→ replaceRangeWithSummary + summarize；`better-compact` 与 `test-compact` 共用（差异只在选段/指令/校验参数/超时来源：正式精压传 `cfg.timeouts.llmMs`，`/bctest` 不传=180s 默认） |
 | `actions/support.js` | `combinedSignal`, `beginInflight`, `finishInflight`, `cancelErrorOf` | **动作层胶水**：AbortSignal 组合、inflight 登记/注销、取消收口（cancelled 与 commit/persistence 不混淆） |
+| `actions/diagnostics.js` | `readDiagnostics` | **0.4 P0-2 诊断组装**：从 cfg / `settings.view()` / `readState` / `deps.diag.snapshot()` 取数并裁成白名单输入，交给 `dsh/diagnostics` 构造（A9：adapters 不直接碰 dsh 细节） |
 
 ### adapters —— 入口适配（只做协议转换）
 
 | 文件 | 职责 |
 |---|---|
 | `adapters/commands.js` | 注册 `/bc`（预览/confirm）`/handoff` `/pin` `/unpin` `/bctest`(dev) |
-| `adapters/http.js` | `GET /api/compact-relay-state`、`-stream`（SSE）、`-handoffs`、`-diff`、`-settings`；`POST /api/compact-relay-action`（preview/compact/cancel/pin-toggle/handoff/handoff-preview/native-auto） |
+| `adapters/http.js` | `GET /api/compact-relay-state`、`-stream`（SSE）、`-handoffs`、`-diff`、`-settings`、`-diagnostics`（0.4 P0-2 只读诊断）；`POST /api/compact-relay-action`（preview/compact/cancel/pin-toggle/handoff/handoff-preview/native-auto） |
 | `adapters/tool.js` | `mark_compress_point` 工具（0.3.4 改名，旧名 `mark_stage`）：模型判断「压缩节点」→ `actions/compress-hint.js` → plugin record |
 | `adapters/prompt.js` | `registerCompressCue` / `compressCueFor`：注册 systemPrompt 动态 context（order 300），同步读状态缓存给出「可压缩区间」提示；异常/缺服务返回 ''，不影响宿主 |
 
@@ -322,6 +328,9 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 | AbortSignal 组合 / inflight 登记 / 取消收口 | `actions/support.js` | 每个动作自己 `inflight.begin/finish` + 判 commit/persistence |
 | client 环几何 / 原生线 / 浮层材质 | `lib/client/15-shared.js` | 指示灯与设置页教学图各画一遍、7 处浮层各抄 5 行样式 |
 | 交接单 markdown 解析 | `core/markdown-lite.js`（client 内联） | 面板/其它入口各写一份解析/渲染 |
+| 诊断计数 / p50-p95 / 错误码聚合 | `dsh/diag-counters.js` | actions 各自维护计数器、各自算分位数 |
+| 诊断产物构造 / 脱敏 / 尺寸上限 | `dsh/diagnostics.js` | HTTP、客户端各拼一份诊断 JSON/Markdown 或各写一套脱敏 |
+| 诊断取数 / 白名单裁剪 | `actions/diagnostics.js` | adapters 直接读 cfg/readState 拼诊断 |
 
 ---
 
@@ -451,15 +460,18 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 │  │  ├─ state-hub.js site-info.js handoff-files.js session-files.js
 │  │  ├─ compaction-log.js compaction-pair.js settings-file.js relay.js native-compaction.js
 │  │  ├─ model-task.js（模型任务公共装配/收尾）
+│  │  ├─ diag-counters.js / diagnostics.js（0.4 P0-2 诊断计数 + 诊断包构造）
 │  ├─ actions/                  # 动作层
 │  │  ├─ state.js better-compact.js test-compact.js handoff.js
 │  │  ├─ handoff-docs.js compact-diff.js settings.js
 │  │  ├─ lock.js inflight.js pin.js compress-hint.js native-compaction.js
 │  │  ├─ compact-run.js（压缩执行流程）/ support.js（信号/inflight/取消收口）
+│  │  ├─ diagnostics.js（0.4 P0-2 诊断组装：取数 + 白名单裁剪）
 │  └─ adapters/                 # 入口适配
 │     ├─ commands.js / http.js / tool.js / prompt.js
 └─ test/
    ├─ smoke.mjs / handoff.mjs / plugin-load.mjs / contract.mjs / compact-log.mjs
+   ├─ diagnostics.mjs（0.4 P0-2：T1–T9 诊断包单测）
    ├─ harness/                  # A7：统一 mock（host / session / llm / dsh-stubs）
    └─ e2e/                      # 隔离 DSH 端到端（smoke / settings-ui / real-compact / action）
 ```

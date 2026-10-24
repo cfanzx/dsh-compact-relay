@@ -91,7 +91,7 @@ Configuration is available under **Settings → 压缩接力** (in the account m
 - **Compaction behaviour**: configure the summary retention limit, the recent-token retention count, and the handoff document directory.
 - **DSH native auto-compaction**: read the host's current threshold and enable or disable DSH native auto-compaction (a backup is created before the profile configuration is modified; a restart is required for the change to take effect).
 - **Colors & appearance**: configure five base colors; the system derives adapted shades for the light and dark themes automatically.
-- **Help**: ring legend, usage notes, feedback links, and a "show the onboarding again" button.
+- **Help**: ring legend, usage notes, feedback links, a "show the onboarding again" button, and **Diagnostics** (generated locally, preview-then-copy — see the next section).
 - **About / dangerous operations**: version number, configuration file path, and factory reset.
 
 ![Settings](assets/settings.jpg)
@@ -103,6 +103,23 @@ Each setting includes a definition and a description of the effect of changing i
 The first time a session is opened, the ring plays a brief highlight animation with a short functional description (triggered automatically once only; it can be replayed from the Settings page).
 
 ![First-run onboarding](assets/onboarding.jpg)
+
+## Diagnostics and privacy
+
+**Settings → 压缩接力 → Help → Diagnostics**:
+
+- **Generate and preview**: creates a Markdown + JSON diagnostics report **locally**, shows it in a preview dialog first; then **Copy Markdown** / **Copy JSON** and paste it wherever you choose (for example a GitHub issue).
+- **Open issue page**: opens a GitHub issue page with the short version/platform fields pre-filled. It does **not** paste the diagnostics report for you — you decide whether and where to paste it.
+
+**What the report contains**: plugin version, DSH version (empty when unavailable), Node / OS / architecture / locale; configured thresholds, retention, timeouts and color mode; a numeric snapshot of the current state (window, used tokens, summaries, pinned count); per-load counts for compaction/handoff/pinning, p50/p95 durations, and the last 20 error codes.
+
+**What it never contains**: chat content, summaries, handoff document bodies, tool arguments/results, file paths, usernames, hostname, session ids, keys/tokens/cookies, other plugin lists or custom links. The report is built field-by-field from an allowlist inside the host process, then run through a second regex redaction pass (matches are replaced with `[REDACTED]` and only the count is recorded — never the original text).
+
+**Three privacy notes**:
+
+1. The report is **generated locally only**: the plugin has no automatic upload, telemetry or outbound network requests, and the diagnostics endpoint is a read-only GET with no upload channel.
+2. **No conversation content is touched**: only numbers, enums, booleans and error codes are collected; messages, summaries and handoff bodies are never read.
+3. Opening the issue page only opens a browser. Issues are public by default; whether and where you paste is up to you. The plugin adds no network capability and reports nothing.
 
 ## Commands
 

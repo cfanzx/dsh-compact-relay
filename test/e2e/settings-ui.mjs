@@ -114,6 +114,115 @@ try {
     if (!hit.href.includes(hrefPart)) throw new Error(`外链地址不对：${label} → ${hit.href}`);
   }
 
+  // ---- 0.4 P0-2：诊断信息真机检查（本机生成 / 预览 / 复制；不真点开 issue 页）----
+  log('[5.5] 诊断信息入口');
+  const diagEntry = await driver.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const block = d.querySelector('[data-cr-diagnostics]');
+    const buttonTexts = [...d.querySelectorAll('button')].map((b) => (b.innerText || '').trim());
+    return {
+      hasBlock: !!block,
+      blockText: block ? block.innerText : '',
+      hasGenerate: buttonTexts.includes('生成并预览'),
+      hasIssue: buttonTexts.includes('打开问题报告页'),
+      hasForbiddenButton: buttonTexts.some((text) => /发送|上传|上报/.test(text)),
+    };
+  })()`);
+  const diagEntryBrief = {
+    hasBlock: diagEntry.hasBlock,
+    hasGenerate: diagEntry.hasGenerate,
+    hasIssue: diagEntry.hasIssue,
+    hasForbiddenButton: diagEntry.hasForbiddenButton,
+  };
+  log('诊断信息入口:', JSON.stringify(diagEntryBrief));
+  if (!diagEntry.hasBlock || !diagEntry.hasGenerate || !diagEntry.hasIssue) {
+    throw new Error('帮助区缺少「诊断信息」入口或两个按钮（生成并预览 / 打开问题报告页）');
+  }
+  if (diagEntry.hasForbiddenButton) throw new Error('按钮文案出现禁词（发送/上传/上报）');
+  if (/(发送|上传|上报)/.test(diagEntry.blockText)) throw new Error('诊断说明区出现禁词（发送/上传/上报）');
+
+  const errorsBeforeDiag = driver.pageErrors.length;
+  const diagClicked = await driver.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = [...d.querySelectorAll('button')].find((x) => (x.innerText || '').trim() === '生成并预览');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  if (!diagClicked) throw new Error('点不到「生成并预览」');
+  await driver.waitFor(`!!document.querySelector('[data-cr-diagnostics-modal]')`, 15_000);
+  const preview = await driver.eval(`(() => {
+    const modal = document.querySelector('[data-cr-diagnostics-modal]');
+    const dialog = modal ? modal.querySelector('[role="dialog"]') : null;
+    const pre = modal ? modal.querySelector('[data-cr-diagnostics-preview]') : null;
+    const content = pre ? pre.innerText : '';
+    const modalText = modal ? modal.innerText : '';
+    return {
+      ariaLabel: dialog ? dialog.getAttribute('aria-label') : null,
+      content,
+      buttons: modal ? [...modal.querySelectorAll('button')].map((b) => (b.innerText || '').trim()) : [],
+      hasSchema: content.includes('dcr-diagnostics/v1'),
+      hasMasked: /脱敏/.test(modalText),
+      hasSessionId: /session-[0-9a-z]{8,}/i.test(content) || content.includes('sessionId'),
+      hasAbsPath: content.includes('/Users/') || /(^|[\\s"'(])\\/(home|root|private|var|opt|etc|tmp)\\//m.test(content) || content.includes(${JSON.stringify(e2e.ISOLATED_HOME)}),
+    };
+  })()`);
+  const previewBrief = {
+    ariaLabel: preview.ariaLabel,
+    buttons: preview.buttons,
+    hasSchema: preview.hasSchema,
+    hasMasked: preview.hasMasked,
+    hasSessionId: preview.hasSessionId,
+    hasAbsPath: preview.hasAbsPath,
+    contentChars: preview.content.length,
+  };
+  log('诊断预览:', JSON.stringify(previewBrief));
+  if (preview.ariaLabel !== '诊断信息预览（脱敏）') throw new Error(`预览弹层 aria-label 不对：${preview.ariaLabel}`);
+  if (!preview.hasSchema) throw new Error('预览内容缺少 dcr-diagnostics/v1');
+  if (!preview.hasMasked) throw new Error('预览内容缺少「脱敏」字样');
+  if (preview.hasSessionId) throw new Error('预览内容出现 sessionId 值（脱敏失败）');
+  if (preview.hasAbsPath) throw new Error('预览内容出现绝对路径（脱敏失败）');
+  for (const wantedButton of ['复制 Markdown', '复制 JSON', '关闭']) {
+    if (!preview.buttons.includes(wantedButton)) throw new Error(`预览弹层缺少按钮：${wantedButton}`);
+  }
+  await driver.screenshot('/tmp/relay-e2e/compress-relay-diagnostics-preview.png');
+
+  // headless 剪贴板可能被拒：只要有点击反馈（成功或失败提示）即可，不许无反应/崩溃。
+  const copyClicked = await driver.eval(`(() => {
+    const modal = document.querySelector('[data-cr-diagnostics-modal]');
+    const b = modal && [...modal.querySelectorAll('button')].find((x) => (x.innerText || '').trim() === '复制 Markdown');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  if (!copyClicked) throw new Error('弹层里没有「复制 Markdown」');
+  const copyFeedback = await driver.eval(`new Promise((resolve) => {
+    const started = Date.now();
+    const tick = () => {
+      const el = document.querySelector('[data-cr-diagnostics-copy-status],[data-cr-diagnostics-toast]');
+      const text = el ? (el.innerText || '').trim() : '';
+      if (text) { resolve(text); return; }
+      if (Date.now() - started > 6000) { resolve(''); return; }
+      setTimeout(tick, 100);
+    };
+    tick();
+  })`);
+  log('复制 Markdown 反馈:', JSON.stringify(copyFeedback));
+  if (!copyFeedback.startsWith('已复制') && !copyFeedback.startsWith('复制失败')) {
+    throw new Error(`复制 Markdown 没有可识别的成功/失败反馈：${copyFeedback || '(无)'}`);
+  }
+  const newPageErrors = driver.pageErrors.slice(errorsBeforeDiag);
+  if (newPageErrors.length > 0) throw new Error(`诊断弹层操作出现未捕获异常：${newPageErrors.join(' | ')}`);
+
+  // 关掉预览弹层，继续原有测试（弹层不残留）。
+  await driver.eval(`(() => {
+    const modal = document.querySelector('[data-cr-diagnostics-modal]');
+    const b = modal && [...modal.querySelectorAll('button')].find((x) => (x.innerText || '').trim() === '关闭');
+    if (b) b.click();
+    return true;
+  })()`);
+  await driver.waitFor(`!document.querySelector('[data-cr-diagnostics-modal]')`, 5000);
+
   const counts = await driver.eval(`(() => {
     const d = document.querySelector('[role="dialog"]');
     return {
@@ -237,6 +346,7 @@ try {
   }
   await driver.screenshot(shot);
   log('截图:', shot);
+  log('PASS 诊断信息：入口按钮/生成并预览弹层/dcr-diagnostics/v1/脱敏字样/无 sessionId 与路径/复制反馈', JSON.stringify(copyFeedback));
   log('PASS 设置栏 UI：压缩接力小节 / 作用+调整后小字 / 保存热生效 / 预设颜色');
 } catch (error) {
   console.error('FAIL', error);

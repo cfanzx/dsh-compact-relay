@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## Unreleased（0.4.0 P0-2：诊断包最小版）
 
-（暂无新改动）
+- **新增「诊断信息」入口**（设置 → 压缩接力 → 帮助）：【生成并预览】在本机生成一份 Markdown + JSON 诊断信息，弹层里先预览，再【复制 Markdown】/【复制 JSON】；【打开问题报告页】打开预填版本/平台短字段的 GitHub issue 页。**不做任何自动上传、遥测或后台外发，也不加网络能力。**
+- **新增只读端点** `GET /api/compact-relay-diagnostics?sessionId=`：沿用宿主 `connection.requestRejection` 鉴权（401/403）；只支持 GET（非 GET 405）；无活动会话时 `state: null`；返回 `{ok, schema, version, generatedAt, markdown, json, issueUrl}`，响应不含正文/堆栈（失败只回短文案）。
+- **新增 `lib/dsh/diag-counters.js`**：进程内计数/耗时/错误码（重启清零）。压缩/交接成功失败计数、最近 20 个耗时样本的 p50/p95、按 `(code, phase)` 聚合的最近 20 条错误码（只收 code/phase/at/count，**不收 message**），锁定动作计数。
+- **新增 `lib/dsh/diagnostics.js`**：`dcr-diagnostics/v1` 产物构造。allowlist 逐字段取值（禁止整对象透传），产物只含数值/枚举/布尔/错误码；JSON ≤ 64KB、errors ≤ 20 条且单条 ≤ 200 字符；额外正则脱敏（GitHub token / `sk-` / Bearer / cookie / 邮箱 / 绝对路径 / 内网 IP / session id 等命中替换为 `[REDACTED]`，只记数量不保留原文）；issue URL 只预填短字段、长度 < 7500。
+- **埋点（不改行为与文案）**：`actions/compact-run.js` 与 `actions/handoff.js` 记成功/失败/耗时/错误码；`actions/pin.js` 只在成功锁定时计数（解锁不计）。
+- **新增 `lib/actions/diagnostics.js`**：诊断组装的动作层入口（仓库 A9 架构守卫要求 adapters 不直接 import `dsh/`，故组装落在 actions，HTTP 适配层只做协议转换）。
+- **文档/模板**：README（中英）新增「诊断信息与隐私 / Diagnostics and privacy」节；`.github/ISSUE_TEMPLATE/bug_report.yml` 文案对齐「生成 → 预览 → 复制」；设置页按钮只用「生成 / 预览 / 复制」，不出现「发送 / 上传 / 上报」。
+- **测试**：新增 `test/diagnostics.mjs`（T1–T9：形状白名单、敏感 fixture 脱敏、禁止字段、零网络（fetch 抛错 + 源码扫描）、URL < 7500、64KB/20 条/200 字符上限、p50/p95、计数器、文案），并入 `npm test`；`test/plugin-load.mjs` 增加只读端点用例（鉴权 / 405 / 白名单产物 / 无会话 `state=null`）；`test/e2e/settings-ui.mjs` 增加诊断信息真机检查（帮助区入口按钮、点【生成并预览】后的弹层内容含 `dcr-diagnostics/v1` 与「脱敏」、不含 sessionId/绝对路径、点【复制 Markdown】必须有成功或失败反馈）。
+- 版本号仍保持 **0.3.6**（本轮不发布、不 bump）；`package.json` 无新增依赖，`capabilities` 未新增 network。
 
 ## 0.3.6（2026-10-24，原生压缩线解析作用域修复）
 

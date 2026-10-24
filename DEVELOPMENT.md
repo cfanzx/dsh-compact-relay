@@ -16,14 +16,17 @@ lib/
   core/             pure logic — no DSH imports (config schema, ring math, colors,
                     handoff spec, placeholders, readiness, ...)
   dsh/              host seams — the only place that imports @deepseek-ai/* APIs
-  actions/          business actions (compaction, handoff, pin, native toggle, preview, lock)
+                    (0.4 P0-2 diagnostics: diag-counters.js counters/p50-p95/error codes,
+                    diagnostics.js allowlist report + redaction, no IO and no network)
+  actions/          business actions (compaction, handoff, pin, native toggle, preview, lock,
+                    diagnostics — the 0.4 P0-2 data picker shared by the HTTP adapter)
   adapters/         registration surfaces (slash commands, HTTP routes, model tools)
   client/           browser half, split into ordered fragments 00…90
   client.js         build artifact — generated, never edit by hand
 scripts/
   build-client.mjs  stitches lib/client/*.js into lib/client.js
 test/
-  smoke.mjs handoff.mjs plugin-load.mjs contract.mjs compact-log.mjs
+  smoke.mjs handoff.mjs plugin-load.mjs contract.mjs compact-log.mjs diagnostics.mjs
   harness/          mock DSH host + session + LLM for unit/integration tests
   e2e/              real-GUI tests (isolated DSH home + headless Chrome)
 ```

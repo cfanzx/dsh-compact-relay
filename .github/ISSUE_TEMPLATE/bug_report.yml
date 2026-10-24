@@ -1,24 +1,26 @@
 name: Bug 报告
-description: 报告 dsh-compact-relay 的问题（请先看 troubleshooting，能附诊断包最好）
+description: 报告 dsh-compact-relay 的问题（请先看 troubleshooting；能附上脱敏后的诊断信息最好）
 title: "[bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈。为了最快定位，请尽量补齐下面几项。**不要粘贴会话内容、路径里的用户名、API key/token、cookies**——诊断信息请先脱敏。
+        感谢反馈。为了最快定位，请尽量补齐下面几项。**不要粘贴会话内容、路径里的用户名、API key/token、cookies**。
+
+        诊断信息这样拿：设置 → 压缩接力 → 帮助 →「诊断信息」→ 点【生成并预览】→ 先在弹层里看一眼（已脱敏）→ 点【复制 Markdown】或【复制 JSON】，再粘贴到下面的「诊断信息」框里。只在本机生成，你可以先预览再决定粘不粘贴。
   - type: input
     id: dcr-version
     attributes:
       label: dsh-compact-relay 版本
-      placeholder: "例如 0.3.6（设置 → 压缩接力 → 关于 里能看到）"
+      placeholder: "例如 0.3.6（设置 → 压缩接力 → 关于，或「生成并预览」的诊断信息里能看到）"
     validations:
       required: true
   - type: input
     id: dsh-version
     attributes:
       label: DSH 版本 / 系统
-      placeholder: "例如 DSH 0.2.1-rc.2 / macOS 15.6 / Windows 11 24H2"
+      placeholder: "例如 DSH 0.2.1-rc.2 / macOS 15.6 / Windows 11 24H2（从诊断信息里复制即可）"
     validations:
       required: true
   - type: textarea
@@ -40,7 +42,7 @@ body:
     id: diagnostics
     attributes:
       label: 诊断信息（脱敏后）
-      description: 设置 → 压缩接力 → 「导出诊断包」生成的 Markdown/JSON，粘贴在这里；或附上文件。
+      description: 设置 → 压缩接力 → 帮助 →「诊断信息」→【生成并预览】→【复制 Markdown】/【复制 JSON】，粘贴在这里。诊断信息只在本机生成、按白名单收集并已脱敏；issue 是公开的，粘贴前请自己再看一眼。
       render: text
     validations:
       required: false
