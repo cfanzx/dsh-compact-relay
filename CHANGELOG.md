@@ -9,6 +9,15 @@
 - **修复**：① `state.js` 显式传 `deps.engine?.isCompactCheckpointSource`；② `session-view.js` 的 `lastCheckpointSurfaceIdx` / `lastCheckpointSurfaceSeq` 给 `isCheckpointSource` 加默认值 `engine.isCompactCheckpointSource`（dsh→dsh 同层、显式传参优先；纯 node 单测不注册 DSH 包解析钩子时安全降级为「无 checkpoint」，不抛）；③ 回归测试加进 `test/state-passive.mjs`（旧 hint + 更新的 checkpoint → `compressHint: null`；hint 比 checkpoint 新 → 保留）。
 - **影响面**：只影响「判断记录新鲜度」的显示与 cue 抑制；不改压缩/交接行为、不改拒绝条件、不动 client。此 bug 自 0.3.1 起存在，随 0.4.0 修复（不回溯 0.3.6）。
 
+### P1-3 压缩/交接可审计流水（轻账本）+ 设置页累计数字
+
+- 新增轻账本 `~/.dsh/compact-relay-ledger.jsonl`（JSONL，一行一条，schema `dcr-ledger/v1`）：每次**压缩/交接成功**后追加一条——`kind`、本地时间、耗时 ms、压前/压后 tokens + ratio、腾出 tokens、pin 命中（`inRange/total`）、交接单落盘路径（仅路径）与 `childId`；交接内部那次压缩不重复记账（一次 `/handoff` 一条）。
+- 隐私：allowlist 构造，只记数值/枚举/时间/路径，**不含消息原文、摘要、交接单正文、sessionId、cwd/用户名**；测试用敏感 fixture 断言产物中不存在。
+- 有界与降级：只保留最近 200 条（超限整文件重写为最近 200 条，tmp+rename 原子替换）；文件损坏按行跳过；任何读写失败静默返回 `{ok:false}`，**绝不影响压缩/交接本体**（测试覆盖：账本 record 抛错时交接仍成功；账本路径不可写时动作照常、文件损坏仍可读可写）。
+- 设置页：`GET /api/compact-relay-settings`（含保存/恢复默认响应）新增 `ledger` 累计字段（`count/compactCount/handoffCount/freedTokens/avgDurationMs/lastAt`），设置页「关于与危险操作」显示一行 `累计：已压缩 X 次 · 交接 Y 次 · 腾出约 Z tokens · 平均耗时 W`；无记录时显示引导文案。数字与账本文件同源（测试断言相等），不做大盘。
+- 新增 `test/ledger.mjs`（字段完整 / allowlist + 敏感 fixture / JSONL 容错 / 上限裁剪 / 不可写降级 / 设置数字一致 / 客户端累计行静态守卫）+ `test/handoff.mjs` 压缩与交接成功后的账本落盘断言 + `test/plugin-load.mjs` 设置端点累计断言；并入 `npm test`。
+- 不改压缩引擎/拒绝条件/阈值；版本仍 0.3.6，未发布。
+
 ### P1-1 压缩预览「建议锁定」提示（只提示、不自动锁）
 
 - 预览接口新增 `preview.pinSuggest = { count, items: [{seq, role, reason, snippet}] }`：宿主侧纯本地启发式（`lib/core/pin-suggest.js`）对「本次将被压掉的历史」识别三类信号——`明确要求别改`（用户消息里「不要改 / 别动 / 保持原样 / 必须保留」等）、`报错堆栈`（异常类名 / 堆栈帧 / 堆栈 / 报错等）、`关键决策`（决定 / 拍板 / 采用 / 改用 / 结论等）；最多 5 条、每条一句摘要 ≤60 字符、不贴全文；短句、系统消息、运行时合成的 user/message（checkpoint 等）、普通工具输出不进入候选。

@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { registerDshStubHooks } from './harness/dsh-stubs.mjs';
 import { callRoute, callRouteAsync, createFakeHost, createTmpDir, openSse } from './harness/host.mjs';
+import { createLedgerStore } from '../lib/dsh/ledger.js';
 import { createFakeLlm } from './harness/llm.mjs';
 
 // DSH 包 → test/stubs/*：必须在动态 import lib/index.js 之前注册。
@@ -218,6 +219,34 @@ assert.equal(initialSettings.body.settingsError.field, 'thresholds.compactRatio'
 assert.equal(initialSettings.body.settingsError.message.includes('压缩提醒线'), true);
 assert.equal(initialSettings.body.config.thresholds.compactRatio, 0.4, '坏覆盖层要回落默认');
 assert.equal(initialSettings.body.path.startsWith(dshHome), true, '设置文件应落在 DSH_HOME 下');
+
+// 0.4 P1-3：设置端点带出轻账本累计（设置页「累计」一行数字的数据源，与账本文件同源）。
+assert.equal(initialSettings.body.ledger.count, 0, '还没有记录时累计为 0');
+const ledgerStore = createLedgerStore();
+assert.deepEqual(
+  ledgerStore.record({ kind: 'compact', durationMs: 1000, beforeTokens: 10000, afterTokens: 5000, beforeRatio: 0.1, afterRatio: 0.05, pinHits: { inRange: 0, total: 0 } }),
+  { ok: true },
+);
+assert.deepEqual(
+  ledgerStore.record({
+    kind: 'handoff',
+    durationMs: 2000,
+    beforeTokens: 5000,
+    afterTokens: 4000,
+    beforeRatio: 0.05,
+    afterRatio: 0.04,
+    pinHits: { inRange: 1, total: 2 },
+    handoff: { path: '/tmp/relay-e2e/handoffs/handoff-1.md', childId: 'session-ledger', started: true },
+  }),
+  { ok: true },
+);
+const settingsWithLedger = await readSettings();
+assert.equal(settingsWithLedger.body.ledger.count, 2);
+assert.equal(settingsWithLedger.body.ledger.compactCount, 1);
+assert.equal(settingsWithLedger.body.ledger.handoffCount, 1);
+assert.equal(settingsWithLedger.body.ledger.freedTokens, 6000);
+assert.equal(settingsWithLedger.body.ledger.avgDurationMs, 1500);
+assert.equal(settingsWithLedger.body.ledger.lastAt.length > 0, true, '最近一条的时间也要下发');
 
 const saveSettings = callRoute(host, '/api/compact-relay-settings', {
   method: 'POST',
@@ -562,7 +591,7 @@ console.log('PASS  state 端点：无会话时合法 JSON');
 console.log('PASS  /api/compact-relay-stream：SSE 建流 + 首帧状态 + 未就绪自动补推');
 console.log('PASS  action 端点：sessionId 缺失/类型错/非法 JSON/跨站/超大 body 均被拒；无会话时 409（含 preview/cancel/pin-toggle）');
 console.log('PASS  /api/compact-relay-handoffs：列表/读取/非法文件名拒绝 + total/加载更多（BUG-006）');
-console.log('PASS  /api/compact-relay-settings：读取/保存热生效/非法比例/跨站/恢复默认');
+console.log('PASS  /api/compact-relay-settings：读取/保存热生效/非法比例/跨站/恢复默认 + P1-3 账本累计');
 console.log('PASS  /api/compact-relay-diagnostics：只读 GET/鉴权/白名单产物/无会话 state=null/非 GET 405');
 console.log('PASS  /bc：预览/confirm 参数校验 + input.hint');
 console.log('PASS  /pin、/unpin：钉住最近一轮 / 列表 / 清空');

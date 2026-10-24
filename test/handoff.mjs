@@ -24,6 +24,7 @@ import { createInflight } from '../lib/actions/inflight.js';
 import { listPins, pinByIndex, pinLastTurn, togglePin, unpinAll } from '../lib/actions/pin.js';
 import { testCompact } from '../lib/actions/test-compact.js';
 import { PIN_RECORD_TYPE } from '../lib/core/pins.js';
+import { createLedgerStore } from '../lib/dsh/ledger.js';
 import { buildSiteSnapshot, gitInfo, pendingJobs } from '../lib/dsh/site-info.js';
 import { livePinnedSeqs } from '../lib/dsh/session-view.js';
 import { childTitleOf } from '../lib/dsh/sessions.js';
@@ -113,16 +114,41 @@ test('BUG-004：摘要第一次误返回工具调用 → 自动重试一次并�
   const { ctx, engine, record } = makeCtx({
     summaryReplies: [{ text: '', finish: 'tool-calls' }, summaryReply()],
   });
+  const ledgerFile = path.join(createTmpDir('relay-ledger-compact-'), 'compact-relay-ledger.jsonl');
   const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
+  deps.ledger = createLedgerStore({ file: ledgerFile });
   const outcome = await betterCompact(deps, { agent: createAgent(session) });
   assert.equal(outcome.compacted, true, '工具调用只是模型跑偏，重试后应当成功压缩');
   assert.equal(record.llmCalls.filter((call) => call.kind === 'summary').length, 2, '第一次工具调用后必须重试一次');
+
+  // 0.4 P1-3：压缩成功后轻账本要新增一条字段完整的 compact 记录（只记数值，不含消息/摘要）。
+  const compactLines = fs.readFileSync(ledgerFile, 'utf8').trim().split('\n');
+  assert.equal(compactLines.length, 1, '一次压缩只记一条账本记录（交接内部压缩不会重复记）');
+  const compactEntry = JSON.parse(compactLines[0]);
+  assert.equal(compactEntry.schema, 'dcr-ledger/v1');
+  assert.equal(compactEntry.kind, 'compact');
+  assert.equal(typeof compactEntry.at, 'string');
+  assert.equal(typeof compactEntry.durationMs, 'number');
+  assert.equal(typeof compactEntry.beforeTokens, 'number');
+  assert.equal(Number.isInteger(compactEntry.afterTokens), true, '压后占用也要测出来');
+  assert.equal(compactEntry.freedTokens, compactEntry.beforeTokens - compactEntry.afterTokens);
+  assert.equal(typeof compactEntry.beforeRatio, 'number');
+  assert.equal(typeof compactEntry.afterRatio, 'number');
+  assert.deepEqual(compactEntry.pinHits, { inRange: 0, total: 0 });
+  assert.equal(compactEntry.handoff, null);
+  assert.equal(JSON.stringify(compactEntry).includes('已记录压缩节点'), false, '账本不记摘要/消息正文');
 });
 
 test('BUG-004：交接前压缩失败 → 完成提示带具体原因和 /bc 建议（不再只说「详见日志」）', async () => {
   const session = baseSourceSession();
   const { ctx, engine } = makeCtx({ summaryReplies: [{ text: '', finish: 'tool-calls' }] });
   const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
+  // 0.4 P1-3 降级：账本写失败/抛错绝不能影响交接本体。
+  deps.ledger = {
+    record() {
+      throw new Error('ledger is on fire');
+    },
+  };
   const result = await handoff(deps, { agent: createAgent(session), commandId: 'cmd-handoff' });
   assert.equal(result.ok, true, '压缩失败不阻塞交接');
   assert.equal(result.message.includes('压缩失败已跳过（'), true);
@@ -135,6 +161,8 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   const { ctx, engine, record } = makeCtx();
   const handoffDir = createTmpDir('relay-m3-');
   const deps = createPluginDeps({ ctx, engine, handoffDir });
+  const ledgerFile = path.join(createTmpDir('relay-ledger-handoff-'), 'compact-relay-ledger.jsonl');
+  deps.ledger = createLedgerStore({ file: ledgerFile });
 
   const result = await handoff(deps, { agent: createAgent(session), commandId: 'cmd-handoff' });
 
@@ -160,6 +188,22 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(positions.every((pos) => pos > 0), true);
   assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
   assert.equal(fs.readdirSync(handoffDir).length, 1);
+
+  // 2.5) 0.4 P1-3：交接成功后轻账本新增一条 handoff 记录（只记数值 + 交接单路径，不含正文）。
+  const ledgerLines = fs.readFileSync(ledgerFile, 'utf8').trim().split('\n');
+  assert.equal(ledgerLines.length, 1, '一次交接只记一条账本记录');
+  const handoffEntry = JSON.parse(ledgerLines[0]);
+  assert.equal(handoffEntry.schema, 'dcr-ledger/v1');
+  assert.equal(handoffEntry.kind, 'handoff');
+  assert.equal(typeof handoffEntry.durationMs, 'number');
+  assert.equal(Number.isInteger(handoffEntry.beforeTokens), true);
+  assert.equal(Number.isInteger(handoffEntry.afterTokens), true);
+  assert.equal(handoffEntry.freedTokens, handoffEntry.beforeTokens - handoffEntry.afterTokens);
+  assert.deepEqual(handoffEntry.pinHits, { inRange: 0, total: 0 });
+  assert.equal(handoffEntry.handoff.path, result.path, '账本要记交接单落盘路径');
+  assert.equal(handoffEntry.handoff.childId, result.childId);
+  assert.equal(handoffEntry.handoff.started, true);
+  assert.equal(JSON.stringify(handoffEntry).includes('## 总体目标'), false, '账本不许包含交接单正文');
 
   // 3) 先精压：源会话里发生了完整事务，surface 已被摘要替换
   const types = session.log.map((event) => event.type);
