@@ -1,0 +1,53 @@
+name: Bug 报告
+description: 报告 dsh-compact-relay 的问题（请先看 troubleshooting，能附诊断包最好）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。为了最快定位，请尽量补齐下面几项。**不要粘贴会话内容、路径里的用户名、API key/token、cookies**——诊断信息请先脱敏。
+  - type: input
+    id: dcr-version
+    attributes:
+      label: dsh-compact-relay 版本
+      placeholder: "例如 0.3.6（设置 → 压缩接力 → 关于 里能看到）"
+    validations:
+      required: true
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本 / 系统
+      placeholder: "例如 DSH 0.2.1-rc.2 / macOS 15.6 / Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 发生了什么？什么时候开始的？菜单/指示灯/命令/交接单各是什么表现？
+      placeholder: "例如：用量 53.5%、建议压缩，但菜单「压缩旧会话」灰色不可点，提示「暂无可压缩内容」"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: "1. 重启 DSH\n2. 打开某个会话（不发消息）\n3. 点输入框左侧指示灯 → 菜单"
+    validations:
+      required: false
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息（脱敏后）
+      description: 设置 → 压缩接力 → 「导出诊断包」生成的 Markdown/JSON，粘贴在这里；或附上文件。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图 / 日志 / 其他
+      description: 可以拖图片进来；日志里注意先脱敏。
+    validations:
+      required: false

@@ -4,6 +4,16 @@
 
 （暂无新改动）
 
+## 0.3.6（2026-10-24，原生压缩线解析作用域修复）
+
+- **问题（BUG-012，外部用户报告，Windows / DSH 0.2.1-rc.2，真实会话 `session-1f90f5ee`，2026-10-23）**：指示灯「原生自动压缩线」（紫色刻度）从默认 80% 误显示成 **50%**。用户配置的 `compaction-basic` 块里只有 `config.modelPolicies`（`mac-unc` / `qwen35-unc-64k`）写了 `thresholdRatio: 0.5`，并没有改全局线。
+- **根因**：`lib/dsh/native-compaction.js` 的 `parseCompactionOverride` 只按「下一个顶层 `-` 条目」截断，不区分 YAML 缩进层级 —— `config.modelPolicies[*].thresholdRatio` 被当成整个插件的全局线。
+- **修复**：按**缩进**定位 `compaction-basic` 条目 → 它的 `config:` 直接子键，只认这一层的 `auto` / `thresholdRatio`；更深嵌套层（`modelPolicies[*]`、多层 map/list）一律忽略。`applyAutoOverride` 写入口径同步（只写 config 直接子键，不写进 `modelPolicies`）。
+- **边界**：没有 `config:` / config 为空 → `found=true` 但无覆盖，读侧回落默认值（80%）；多个 `compaction-basic` 条目取第一个；CRLF 文件解析与 apply 后都保持 CRLF；`#` 注释与引号值兼容现有写法。
+- **范围**：本次只修解析作用域；「按当前模型 route 算真实触发线（deepseek-flash 67.8% / mac-unc 75%，而非窗口比例 80%）」留 0.4。
+- **测试**：新增 `test/native-compaction.mjs`（① config 直属阈值生效 ② 嵌套 modelPolicies 被忽略并回落 0.8 ③ 嵌套+直属取直属 ④ 多层嵌套 ⑤ 无 config / 无条目 ⑥ CRLF ⑦ apply 后回读且不破坏 modelPolicies ⑧ 引号/注释），并入 `npm test`；修复前该测试在嵌套用例上失败（把 0.6 误读成全局线）。
+- 测试基线：smoke 53/53、handoff 35/35、plugin-load 14/14、contract 17/17、compact-log PASS、compress-cue PASS、state-passive PASS、native-compaction PASS、markdown-lite PASS；client bundle `--check` 通过（148857 字符，本补丁不改 client）。
+
 ## 0.3.5（2026-10-24，压缩按钮误禁修复）
 
 - **问题（外部用户报告，0.3.3 / Windows；0.3.4 源码同样存在）**：会话用量 53.5%、插件建议压缩，但指示灯菜单「压缩旧会话」灰置，提示「暂无可压缩内容（会话太短，或近期会话需保留原文）」——把「没有活的 agent」误当成「没有可压缩内容」。

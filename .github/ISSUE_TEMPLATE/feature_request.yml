@@ -1,0 +1,29 @@
+name: 功能建议
+description: 想要 dsh-compact-relay 支持什么？先说说你的使用场景
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先描述「你在做什么任务、卡在哪」，再说想要的功能——比直接提方案更有用。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 什么任务、多长、上下文大概多少、你现在怎么处理的？
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 想要的功能
+      placeholder: "例如：压缩前高亮关键决策消息并建议 /pin"
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 现在的替代做法（可选）
+    validations:
+      required: false

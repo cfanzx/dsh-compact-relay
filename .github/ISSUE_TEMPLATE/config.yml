@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安装 / 使用教程
+    url: https://github.com/cfanzx/dsh-compact-relay/blob/main/TUTORIAL.md
+    about: 先看教程：安装、/bc、/handoff、/pin 的用法与常见问题
+  - name: 常见问题（README）
+    url: https://github.com/cfanzx/dsh-compact-relay#readme
+    about: 指示灯含义、阈值、压缩与交接的边界
