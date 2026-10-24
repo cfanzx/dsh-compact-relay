@@ -158,5 +158,62 @@ function sessionWithMessages(id = 'session-passive') {
   assert.equal(Object.hasOwn(state, 'compactRangeReason'), true, '新字段 compactRangeReason 必须存在');
 }
 
+/* ------------------------------------------------------------------ *
+ * 6. 0.4 BUG-013：压缩/交接后旧 compressHint 必须失效（checkpoint 判定）
+ *
+ * 根因：readState 调 lastCheckpointSurfaceSeq(session) 漏传 isCheckpointSource，
+ * session-view 里 TypeError 被吞 → 永远 -1 → checkpointSeq undefined →
+ * compressHintIsActive 恒 true（旧断点残留 + 旧 ratio 抑制 cue 注入）。
+ * 这里锁住「旧 hint + 更新的 checkpoint → null」和「hint 比 checkpoint 新 → 保留」。
+ * ------------------------------------------------------------------ */
+
+const HINT_TYPE = 'plugin:compact-relay/compress-hint';
+
+/** 用「认 compact-checkpoint source」的 fake engine 构造 readState deps。 */
+function checkpointDepsOf(session) {
+  const deps = depsOf({ liveSession: session });
+  deps.engine = {
+    ...engine,
+    isCompactCheckpointSource: (source) => source?.kind === 'compact-checkpoint',
+  };
+  return deps;
+}
+
+{
+  // 旧 hint（seq 1）+ 更新的 checkpoint（seq 2）→ 提示已失效。
+  const session = new MockSession({
+    id: 'session-hint-stale',
+    cwd: undefined,
+    agentPreset: undefined,
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '旧消息' } },
+      { type: HINT_TYPE, ignorable: true, data: { ratio: 0.264, at: 111 } },
+      { type: 'user/message', data: { role: 'user', content: '压缩摘要', source: { kind: 'compact-checkpoint', compactionId: 'c1' } } },
+    ],
+  });
+  const state = await readState(checkpointDepsOf(session), { sessionId: session.id });
+  assert.equal(state.compressHint, null, '压缩/交接 checkpoint 之后的旧 compressHint 必须失效（BUG-013）');
+  assert.equal(session.log[1].seq < session.log[2].seq, true, '夹具顺序：hint seq < checkpoint seq');
+}
+
+{
+  // 正向：hint（seq 2）比 checkpoint（seq 1）新 → 仍然有效，不能被误杀。
+  const session = new MockSession({
+    id: 'session-hint-fresh',
+    cwd: undefined,
+    agentPreset: undefined,
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '旧消息' } },
+      { type: 'user/message', data: { role: 'user', content: '压缩摘要', source: { kind: 'compact-checkpoint', compactionId: 'c2' } } },
+      { type: HINT_TYPE, ignorable: true, data: { ratio: 0.264, at: 222 } },
+    ],
+  });
+  const state = await readState(checkpointDepsOf(session), { sessionId: session.id });
+  assert.notEqual(state.compressHint, null, 'hint 比 checkpoint 新时应保留（不能把正常情况误杀）');
+  assert.equal(state.compressHint.ratio, 0.264);
+  assert.equal(state.compressHint.seq, 2);
+}
+
 console.log('PASS  0.3.5 state：无活 agent 的 live session 仍算出可压范围 + reason=no_agent');
-console.log('PASS  0.3.5 state：有活 agent reason=null；空会话/无会话不误报'); 
+console.log('PASS  0.3.5 state：有活 agent reason=null；空会话/无会话不误报');
+console.log('PASS  0.4 BUG-013 state：checkpoint 之后的旧 compressHint 失效 / 更新的 hint 保留'); 

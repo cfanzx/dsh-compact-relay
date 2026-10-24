@@ -2,6 +2,13 @@
 
 ## Unreleased（0.4.0）
 
+### 修复：压缩/交接后「压缩判断记录」从未失效（BUG-013，0.3.1 起存在）
+
+- **问题（真机发现，2026-10-24）**：压缩/交接后旧的 `compressHint` 本该自动失效（环上断点消失、不再抑制 cue），实际一直判定「有效」。P0-1 上线后真机诊断包里 `counters.cueInjected=0` 的直接原因就是它——旧 hint 的 ratio（26.4%）高于当前 ratio（18.5%），`ratio - hint.ratio < 10%` 的 hint 抑制规则把 cue 全部挡掉；指示灯环上也残留旧断点（26%）。
+- **根因**：`lib/actions/state.js` 调 `lastCheckpointSurfaceSeq(session)` 时**漏传第二个参数** `isCheckpointSource`；`lib/dsh/session-view.js` 里对 `undefined` 调用判定函数抛 TypeError，又被事件循环里的 try/catch 吞成「不是 checkpoint」→ 永远返回 -1 → `checkpointSeq = undefined` → `compressHintIsActive(hint, undefined)` 恒为 true。（对照：`lib/dsh/select-range.js` 传参正确，所以选段/不二压一直正常。）
+- **修复**：① `state.js` 显式传 `deps.engine?.isCompactCheckpointSource`；② `session-view.js` 的 `lastCheckpointSurfaceIdx` / `lastCheckpointSurfaceSeq` 给 `isCheckpointSource` 加默认值 `engine.isCompactCheckpointSource`（dsh→dsh 同层、显式传参优先；纯 node 单测不注册 DSH 包解析钩子时安全降级为「无 checkpoint」，不抛）；③ 回归测试加进 `test/state-passive.mjs`（旧 hint + 更新的 checkpoint → `compressHint: null`；hint 比 checkpoint 新 → 保留）。
+- **影响面**：只影响「判断记录新鲜度」的显示与 cue 抑制；不改压缩/交接行为、不改拒绝条件、不动 client。此 bug 自 0.3.1 起存在，随 0.4.0 修复（不回溯 0.3.6）。
+
 ### P0-1 判断机制加强（未发布，代码已落地，待 3 次真实任务验收）
 
 - **背景（BUG-010 后续）**：Windows 173 个真实会话里 cue 注入 18 次、`mark_compress_point` 调用 **0 次**；Mac 仅在「脚本写完 + 真机验证通过」这种明确节点自发调用过。归因：旧 cue 的「不确定就不用调」让模型倾向保守跳过、工具描述强调拒绝风险、每轮注入变成背景噪声。
