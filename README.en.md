@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.3-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.3.4-blue)](CHANGELOG.md)
 
 </div>
 
@@ -31,6 +31,8 @@ The plugin mounts beside the existing composer. Default parameters are tuned for
 ### 1. Occupancy visualization
 
 The ring is colored in segments according to the compression-assessment logic: the suggested compression point determined by the model or configured threshold, the positions of pinned messages, and the DSH native auto-compaction line (80% by default). When occupancy crosses the native auto-compaction line, the ring flashes red.
+
+When occupancy enters the compressible band (between the minimum compression line and the compression line), the plugin proactively tells the model the current occupancy and band through a dynamic system-prompt context, so it can decide whether to record a compression node after finishing a natural milestone (since 0.3.4; before that the model could not see occupancy, so the condition was not actionable).
 
 Hovering over the ring displays exact values: capacity used, cumulative compaction count, current suggestion, compression point, native auto-compaction line, and the number of pinned messages.
 
@@ -58,7 +60,7 @@ Running `/pin` marks messages that must be preserved during compaction. Pinned m
 | Blue arc | The normal capacity zone is full |
 | Amber arc | The compression point has been passed; compaction is suitable |
 | Red arc | The handoff threshold has been passed; switching to a new session is recommended |
-| Ring notch | Suggested compression point (determined by model assessment or the configured threshold) |
+| Ring notch | Suggested compression point (the system proactively prompts the model to assess inside the compressible band; shown after the model records one or the compression line is reached) |
 | Violet tick | DSH native auto-compaction line (reads `compaction-basic.thresholdRatio`, 80% by default) |
 | Magenta blocks | Distribution of pinned messages in the history |
 | Full-ring red flash | The native auto-compaction line has been crossed; DSH native auto-compaction is imminent |
@@ -120,10 +122,11 @@ The first time a session is opened, the ring plays a brief highlight animation w
 - **Local storage only**: plugin state is stored in `~/.dsh/compact-relay.json` and handoff documents in `~/.dsh/handoffs/`; no external data is synchronized.
 - **Tied to the desktop composer**: the ring indicator, `/bc` and `/handoff` depend on the DSH composer and slash-command system. They are not loaded in headless sessions or in bridge links such as QQ/WeChat, where `/bc` is treated as an ordinary message. That is a limitation of the bridge link, not a plugin failure.
 - **UI language limitation**: the current UI is Simplified Chinese only; an English UI is planned with no fixed schedule.
+- **Prerequisite for the model hint**: the compressible-band hint relies on the DSH 0.2.x root service `systemPrompt` (same as plugins such as memory). It is a heuristic prompt and does not guarantee the model records a compression node every time, but the condition is now actionable instead of unobservable.
 
 ## Version and license
 
-- **Current version**: 0.3.3 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
+- **Current version**: 0.3.4 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixes the compression-point judgment mechanism and adds handoff Markdown rendering plus list load-more). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
 - **License**: [MIT](LICENSE). Feedback and Pull Requests are welcome via [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues).
 
 ## Credits

@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.3-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.3.4-blue)](CHANGELOG.md)
 
 </div>
 
@@ -31,6 +31,8 @@
 ### 1. 状态可视化监控
 
 指示环按压缩评估逻辑分段显色，分别标识模型或阈值判定的建议压缩点、已锁定消息位置，以及 DSH 原生自动压缩线（默认 80%）。当上下文占用越过原生自动压缩线时，整环呈红色闪烁告警。
+
+上下文进入「可压缩区间」（最小压缩线到压缩线之间）时，插件会在系统提示里主动告诉模型当前容量与区间，模型据此判断「刚完成一个自然节点」时是否记录压缩节点（0.3.4 起；此前模型看不到容量，判断条件不可执行）。
 
 鼠标悬停可查看详细数值：已用容量、累计压缩次数、当前操作建议、压缩判断点、原生自动压缩线及已锁定消息数量。
 
@@ -58,7 +60,7 @@
 | 蓝色弧 | 常规容量区间已满 |
 | 琥珀色弧 | 已越过压缩判断点，适合执行压缩 |
 | 红色弧 | 已越过交接阈值，建议切换新会话 |
-| 环形缺口 | 建议压缩点（由模型评估或配置阈值决定） |
+| 环形缺口 | 建议压缩点（系统在可压缩区间主动提示模型判断；模型记录或到达压缩线时自动出现） |
 | 紫色刻度 | DSH 原生自动压缩线（读取 `compaction-basic.thresholdRatio`，默认 80%） |
 | 品红色块 | 已锁定消息在历史记录中的分布位置 |
 | 整环红色闪烁 | 已越过原生自动压缩线，即将触发 DSH 原生自动压缩 |
@@ -120,10 +122,11 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 - **纯本地存储**：插件状态保存于 `~/.dsh/compact-relay.json`，交接文档保存于 `~/.dsh/handoffs/`，无任何外部数据同步。
 - **依附桌面输入框**：环形指示器、`/bc`、`/handoff` 依附 DSH 的输入框与斜杠命令；headless 会话或 QQ / 微信等桥接链路不会加载它们，在这些链路里发 `/bc` 会被当成普通消息——这是桥接链路的能力边界，不是插件故障。
 - **界面语言限制**：当前版本用户界面仅提供简体中文，英文界面已列入后续计划（排期未定）。
+- **模型判断提示的前置**：可压缩区间的动态提示依赖 DSH 0.2.x 的根服务 `systemPrompt`（与 memory 等插件同款）；它是启发式提示，不保证模型每次都会记录压缩节点，但条件从「不可判断」变成「可判断」。
 
 ## 版本状态与开源许可
 
-- **当前版本**：0.3.3（0.3.1 为首个公开版本，0.3.2 修正设置页链接与联系方式，0.3.3 完成 Windows 适配）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
+- **当前版本**：0.3.4（0.3.1 为首个公开版本；0.3.2 修正设置页链接与联系方式；0.3.3 完成 Windows 适配；0.3.4 修复「适合压缩的节点几乎不触发」的判断机制，并补交接单 Markdown 渲染与列表加载更多）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
 - **开源许可**：采用 [MIT](LICENSE) 许可证，欢迎通过 [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues) 与 Pull Requests 提交反馈。
 
 ## 参考与致谢

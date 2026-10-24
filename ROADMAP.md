@@ -1,6 +1,6 @@
 # 压缩接力 · 目标与路线图
 
-> 版本基准：0.3.3（2026-10-20）｜状态：0.3 已发布（npm + GitHub），市场收录 PR 待提
+> 版本基准：0.3.4（2026-10-24）｜状态：0.3 已发布（npm + GitHub），0.3.4 发布中
 > 维护方式：每次发布前更新"当前状态"与勾选进度；方向变化必须同时改本文件和 memory 项目页。
 
 ## 一、最终目标（North Star）
@@ -141,7 +141,8 @@
 ## 七、当前状态 / 下一步
 
 - ✅ 0.3.1 发布包已就绪：版本号 / CHANGELOG / README 安装段 / .gitignore / npm `files` 收窄 / 文件权限归一；测试基线 smoke 50、handoff 35、plugin-load 13、contract 17、compact-log PASS。
-- ✅ 0.3.1 已发布：npm `dsh-compact-relay@0.3.1` + GitHub tag/Release；0.3.2 补设置页链接与联系方式；0.3.3 完成 Windows 适配（Win11 + Node 24.22 全测试通过），npm latest = 0.3.3。
+- ✅ 0.3.1 已发布：npm `dsh-compact-relay@0.3.1` + GitHub tag/Release；0.3.2 补设置页链接与联系方式；0.3.3 完成 Windows 适配（Win11 + Node 24.22 全测试通过）。
+- ✅ 0.3.4 判断机制修复（BUG-010：`mark_compress_point` + systemPrompt 可压缩区间提示 + 状态缓存；427 会话数据佐证旧工具 0 调用）+ BUG-005/BUG-006 小 bug；npm latest 待本次发布。
 - ✅ 真实压缩 e2e：`test/e2e/real-compact.mjs`（真实模型 + 真实压缩事务 + `maxSummaries=1` 合并旧摘要分支）6 项断言通过。
 - ✅ P3-01～14（13 修/1 确认无需修）+ BUG-004 + P2-T1 已收口。
 - ⏳ 市场收录 PR：仓库满 1 天（2026-10-21 19:09 后）提，yml 与说明已备。

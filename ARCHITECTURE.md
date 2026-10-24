@@ -113,7 +113,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/sessions.js` | `createHandoffSession`, `childTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入 |
 | `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`：对 SSE 订阅者去抖推送 `readState`；0.3.4 起**无论有无订阅者都维护最新状态缓存**（`latestState(sessionId)` → `{ratio, window, compressHint}`），供 systemPrompt 同步读取 |
 | `dsh/site-info.js` | `buildSiteSnapshot`, `gitInfo`, `pendingJobs` | 交接单现场快照（启动时长、git、后台任务、模型），只读 |
-| `dsh/handoff-files.js` | `listHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限） |
+| `dsh/handoff-files.js` | `listHandoffFiles`, `countHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限）；`countHandoffFiles` 供列表 `total`（0.3.4 BUG-006） |
 | `dsh/session-files.js` | `changedFilesOf` | 从会话日志收集写/改过的文件（交接单程序段） |
 | `dsh/compaction-log.js` | `recentCompactions` | 压缩历史读侧（A6：配对 summary/end/replace） |
 | `dsh/compaction-pair.js` | `scanCompactionLog` | **压缩事件配对扫描唯一来源**：一次扫描日志返回 summaries / ends(compactionId→end.data) / replaceByCoveredSeq；`session-view.countSummaries` 与 `compaction-log` 共用 |
