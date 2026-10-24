@@ -13,7 +13,7 @@ body:
     id: dcr-version
     attributes:
       label: dsh-compact-relay 版本
-      placeholder: "例如 0.3.6（设置 → 压缩接力 → 关于，或「生成并预览」的诊断信息里能看到）"
+      placeholder: "例如 0.4.0（设置 → 压缩接力 → 关于，或「生成并预览」的诊断信息里能看到）"
     validations:
       required: true
   - type: input

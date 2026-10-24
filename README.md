@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.4-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
 
 </div>
 
@@ -143,7 +143,7 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 
 ## 版本状态与开源许可
 
-- **当前版本**：0.3.4（0.3.1 为首个公开版本；0.3.2 修正设置页链接与联系方式；0.3.3 完成 Windows 适配；0.3.4 修复「适合压缩的节点几乎不触发」的判断机制，并补交接单 Markdown 渲染与列表加载更多）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
+- **当前版本**：0.4.0（0.3.1 为首个公开版本；0.3.2 修正设置页链接与联系方式；0.3.3 完成 Windows 适配；0.3.4 修复判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包（脱敏诊断信息，一键复制/预览）、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
 - **开源许可**：采用 [MIT](LICENSE) 许可证，欢迎通过 [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues) 与 Pull Requests 提交反馈。
 
 ## 参考与致谢
