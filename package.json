@@ -53,7 +53,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node scripts/build-client.mjs --check && node --check lib/client.js && node test/smoke.mjs && node test/handoff.mjs && node test/plugin-load.mjs && node test/contract.mjs && node test/compact-log.mjs && node test/compress-cue.mjs && node test/state-passive.mjs && node test/native-compaction.mjs && node test/markdown-lite.mjs && node test/diagnostics.mjs",
+    "test": "node scripts/build-client.mjs --check && node --check lib/client.js && node test/smoke.mjs && node test/handoff.mjs && node test/plugin-load.mjs && node test/contract.mjs && node test/compact-log.mjs && node test/compress-cue.mjs && node test/state-passive.mjs && node test/native-compaction.mjs && node test/markdown-lite.mjs && node test/diagnostics.mjs && node test/pin-contract.mjs",
     "test:e2e": "node test/e2e/smoke.mjs",
     "test:e2e:settings": "node test/e2e/settings-ui.mjs",
     "test:e2e:compact": "node test/e2e/real-compact.mjs"

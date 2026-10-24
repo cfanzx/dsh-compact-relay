@@ -9,6 +9,20 @@
 - **修复**：① `state.js` 显式传 `deps.engine?.isCompactCheckpointSource`；② `session-view.js` 的 `lastCheckpointSurfaceIdx` / `lastCheckpointSurfaceSeq` 给 `isCheckpointSource` 加默认值 `engine.isCompactCheckpointSource`（dsh→dsh 同层、显式传参优先；纯 node 单测不注册 DSH 包解析钩子时安全降级为「无 checkpoint」，不抛）；③ 回归测试加进 `test/state-passive.mjs`（旧 hint + 更新的 checkpoint → `compressHint: null`；hint 比 checkpoint 新 → 保留）。
 - **影响面**：只影响「判断记录新鲜度」的显示与 cue 抑制；不改压缩/交接行为、不改拒绝条件、不动 client。此 bug 自 0.3.1 起存在，随 0.4.0 修复（不回溯 0.3.6）。
 
+### P1-1 压缩预览「建议锁定」提示（只提示、不自动锁）
+
+- 预览接口新增 `preview.pinSuggest = { count, items: [{seq, role, reason, snippet}] }`：宿主侧纯本地启发式（`lib/core/pin-suggest.js`）对「本次将被压掉的历史」识别三类信号——`明确要求别改`（用户消息里「不要改 / 别动 / 保持原样 / 必须保留」等）、`报错堆栈`（异常类名 / 堆栈帧 / 堆栈 / 报错等）、`关键决策`（决定 / 拍板 / 采用 / 改用 / 结论等）；最多 5 条、每条一句摘要 ≤60 字符、不贴全文；短句、系统消息、运行时合成的 user/message（checkpoint 等）、普通工具输出不进入候选。
+- 客户端预览卡只渲染「建议锁定 N 条（先 /pin 再压）」+ 每条理由/摘要；**绝不自动锁定**（预览不写任何会话事件，测试断言 `session.log` 不变）。`/bc` 预览 message 里也带一句建议。
+- 收敛实现：消息角色/摘要抽取挪到 `lib/core/pin-anchors.js`，`/pin list`、建议锁定、交接单锚点共用一份（删除 `actions/pin.js` 内私有 `previewOf`）。
+
+### P1-2 pin 作为「保留契约」（声明与展示，不承诺第三方引擎）
+
+- 交接单九段结构不变：锚点写进程序段「当前进度」——`- 锁定锚点（保留契约，接手者请原样保留这些消息）` + 每条 `seq N · 角色 · 「一句摘要（≤60 字符）」`（最多列 10 条，其余提示 `/pin list` 看全）+ 一行「跨引擎压缩器是否遵守取决于其实现」。
+- 压缩预览新增 `preview.pinHits = { inRange, total }`：`inRange` = 本次候选范围里被锁定保护而跳过的条数，`total` = 会话仍活着的锁定总数；客户端预览卡显示「pin 命中 N 条」并区分范围外锁定。
+- 不回归：锁定消息仍在压缩范围之前截断（`clipRangeByPins` 既有逻辑），压缩后原样保留在 surface。
+- 测试：新增 `test/pin-contract.mjs`（候选识别含反例、建议条数/上限、交接单锚点、pin 命中数、预览只读不自动锁）+ `test/handoff.mjs` A1b 预览断言补锚点；并入 `npm test`。
+- 边界：只做「声明与展示」，不承诺其他压缩器遵守 pin；不改压缩引擎/拒绝条件/阈值；版本仍 0.3.6，未发布。
+
 ### P0-1 判断机制加强（未发布，代码已落地，待 3 次真实任务验收）
 
 - **背景（BUG-010 后续）**：Windows 173 个真实会话里 cue 注入 18 次、`mark_compress_point` 调用 **0 次**；Mac 仅在「脚本写完 + 真机验证通过」这种明确节点自发调用过。归因：旧 cue 的「不确定就不用调」让模型倾向保守跳过、工具描述强调拒绝风险、每轮注入变成背景噪声。

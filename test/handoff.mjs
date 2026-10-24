@@ -217,6 +217,8 @@ test('A1b 交接预览：九段草稿 + 就绪清单，不写盘/不建会话/�
   const { ctx, engine, record } = makeCtx();
   const handoffDir = createTmpDir('relay-a1b-');
   const deps = createPluginDeps({ ctx, engine, handoffDir });
+  // 0.4 P1-2：先锁一条消息（seq2 = surface 上的 assistant 消息）→ 交接单程序段要带锚点。
+  session.appendPluginRecord(PIN_RECORD_TYPE, { seqs: [2], at: Date.now() });
 
   const result = await previewHandoff(deps, { agent: createAgent(session) });
 
@@ -227,6 +229,9 @@ test('A1b 交接预览：九段草稿 + 就绪清单，不写盘/不建会话/�
   for (const section of HANDOFF_SECTIONS) assert.equal(result.draft.includes(`## ${section}`), true);
   assert.equal(result.draft.includes('## 当前进度'), true);
   assert.equal(result.draft.includes('## 改过的文件'), true);
+  // 0.4 P1-2：pin 保留契约——「当前进度」里要有锚点（seq + 角色 + 一句摘要），九段结构不变。
+  assert.equal(result.draft.includes('锁定锚点（保留契约'), true, '交接单要列出 pin 保留契约锚点');
+  assert.equal(result.draft.includes('seq 2 · 助手'), true, '锚点要带 seq 与角色标签');
   assert.equal(fs.readdirSync(handoffDir).length, 0, '预览不写盘');
   assert.equal(record.createCalls.length, 0, '预览不建会话');
   assert.equal(session.log.some((event) => event.type === 'compaction/start'), false, '预览不压缩');
