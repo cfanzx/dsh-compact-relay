@@ -10,7 +10,7 @@
 
 - **问题与证据**：扫了 427 个真实会话（36,813 次工具调用）——0.3.1 上线后 `mark_stage` 工具调用 **0 次**，`plugin:compact-relay/compress-hint` 记录全库仅 **1 条**（0.3.0 开发期测试）；而工具 schema 在当前会话日志出现 43 次，说明工具确实进了模型上下文，只是模型从不调用。
 - **根因**：工具描述写「系统会告诉你当前容量」，但系统从未告诉模型任何容量 → 「超过最小线 / 还没到压缩线」两条条件无法判断；描述末尾「不要凑数触发」进一步抑制调用。
-- **修复**：新增 `systemPrompt` 动态 context（`core/compress-cue.js` + `adapters/prompt.js`）——容量进入可压缩区间时主动告诉模型当前容量与区间（5% 桶取整减少重发；刚记过 hint 且差 <10 个百分点时抑制；异常/缺服务静默跳过）；`dsh/state-hub.js` 无论有无 SSE 订阅者都维护最新状态缓存（`latestState`）供同步读取。
+- **修复**：新增 `systemPrompt` 动态 context（`core/compress-cue.js` + `adapters/prompt.js`）——容量进入可压缩区间时主动告诉模型当前容量与区间（5% 桶取整并在显示时 clamp 到区间下限，避免「约 30%（区间 33.6%–40%）」自相矛盾；刚记过 hint 且差 <10 个百分点时抑制；异常静默跳过——`systemPrompt` 是 DSH 0.2.x 核心根服务，缺服务时插件不激活）；`dsh/state-hub.js` 无论有无 SSE 订阅者都维护最新状态缓存（`latestState`）供同步读取。
 - **工具**：`mark_stage` 改名 `mark_compress_point`，重写描述（完成明确任务/阶段且认为可安全压旧历史时调用；工具自己返回容量并判断；太低/到线拒绝且不改历史；不确定可调用）；记录/拒绝文案同步，不再有「系统会告诉你」的假承诺。
 - **清理**：删除 0.3.1 遗留死代码 `lib/core/stage.js` + `lib/actions/stage.js`（无任何引用）。
 - **测试**：新增 `test/compress-cue.mjs`（区间边界/5% 桶/动态最小线/hint 抑制 + 状态缓存无订阅者更新/防抖/卸载清理/异常安全 + prompt 适配降级）；`test/plugin-load.mjs` 的 fake host 增加 `systemPrompt` 替身并断言 context 注册、区间内文案、区间外空串、异常安全。

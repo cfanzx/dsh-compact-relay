@@ -349,7 +349,8 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 
 - 根级插件只能 inject **根服务**：`commands` / `agents` / `tokenMeter` / `llm` / `sessions` / `tools` / `systemPrompt`；
   `webServer` 用 `ctx.inject(['webServer'], cb)` 单独要。0.3.4 起 `systemPrompt` 用于注入「可压缩区间」
-  动态提示（缺该服务的宿主会在 apply 里守卫跳过，不影响其它入口）。
+  动态提示；它是 DSH 0.2.x 核心根服务，**缺失时插件会 pending、apply 不会执行**（cordis inject 语义）；
+  apply 里的 `typeof ctx.systemPrompt?.context === 'function'` 守卫只针对「服务在但形状不对」的异常环境。
 - **`compaction` 是 agent 作用域**：它挂在每个 agent preset 的隔离组里
   （`@deepseek-ai/dsh-web-app/presets/*.patch.yml` 的 `isolate: {compaction:true}`）。
   根插件把 `'compaction'` 写进 `inject` 会永远 `pending (waiting for service: compaction)`，

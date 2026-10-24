@@ -47,6 +47,9 @@ assert.equal(formatPercent(0.05), '5');
 assert.equal(formatPercent(0.325), '32.5');
 assert.equal(formatPercent(0.4), '40');
 assert.equal(formatPercent(Number.NaN), '?');
+// 动态下限可能是 33.569%：展示值向上取整，避免「约 30%（区间 33.6%–40%）」自相矛盾。
+assert.equal(formatPercent(0.33568), '33.6');
+assert.equal(formatPercent(0.3351), '33.6', '33.51% 向上取整到 33.6（四舍五入会得到 33.5，可能低于真实下限）');
 
 /* ------------------------------------------------------------------ *
  * 3. cue 文案：区间外空串、区间内点名工具、已记 hint 抑制
@@ -99,6 +102,33 @@ assert.equal(
   '提示里显示的是动态最小线',
 );
 
+// 审计修正（2026-10-24）：显示值必须 clamp 到区间下限，且解析出的「约 N%」≥ minRatio。
+// 覆盖 128K / 200K / 256K 三种窗口下的动态下限（128K + 40K 保留时 minRatio≈33.569%，
+// 旧实现 5% 桶会把 33.7% 显示成「约 30%」，与同一句的区间下限矛盾）。
+for (const window of [128 * 1024, 200 * 1024, 256 * 1024]) {
+  const minRatio = compressionMinRatio({ minRatio: 0.05 }, { recentTailTokens: 40_000 }, window);
+  const compactRatio = 0.4;
+  const ratios = [minRatio, minRatio + 0.001, minRatio + 0.02, (minRatio + compactRatio) / 2, compactRatio - 0.0001];
+  for (const ratio of ratios) {
+    const text = compressCueText({ ratio, minRatio, compactRatio, compressHint: null });
+    assert.equal(text.length > 0, true, `窗口 ${window} 比例 ${ratio} 应提示`);
+    const shown = /约 ([\d.]+)%/.exec(text);
+    const lower = /可压缩区间 ([\d.]+)%/.exec(text);
+    assert.notEqual(shown, null, '提示里应有「约 N%」');
+    assert.notEqual(lower, null, '提示里应有区间下限');
+    assert.equal(
+      Number(shown[1]) / 100 >= minRatio - 1e-9,
+      true,
+      `窗口 ${window} 比例 ${ratio}：显示值 ${shown[1]}% 不能低于真实下限 ${(minRatio * 100).toFixed(4)}%`,
+    );
+    assert.equal(
+      Number(shown[1]) >= Number(lower[1]),
+      true,
+      `窗口 ${window} 比例 ${ratio}：显示值 ${shown[1]}% 不能低于同一句的区间下限 ${lower[1]}%`,
+    );
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * 5. state-hub：无 SSE 订阅者也更新缓存、150ms 防抖、卸载清理、异常安全
  * ------------------------------------------------------------------ */
@@ -150,6 +180,34 @@ assert.deepEqual(hub2.latestState('s'), { ratio: 0.2, window: 100_000, compressH
 hub2.close();
 assert.equal(hub2.latestState('s'), undefined, 'close 要清缓存');
 hub.close();
+
+// 乱序完成：先发出的慢读（revision 1）后到，不能覆盖后发快读（revision 2）。
+const resolvers = [];
+const hub3 = createStateHub({
+  readState: () => new Promise((resolve) => resolvers.push(resolve)),
+});
+hub3.onSessionEvent({ id: 'race' }, {});
+await sleep(240);
+assert.equal(resolvers.length, 1, '第一轮应发起一次读取');
+hub3.onSessionEvent({ id: 'race' }, {});
+await sleep(240);
+assert.equal(resolvers.length, 2, '第二轮应再发起一次读取');
+resolvers[1]({ sessionId: 'race', revision: 2, ratio: 0.32, window: 200_000, compressHint: null });
+await sleep(30);
+resolvers[0]({ sessionId: 'race', revision: 1, ratio: 0.1, window: 200_000, compressHint: null });
+await sleep(30);
+assert.equal(hub3.latestState('race').ratio, 0.32, 'revision 更旧的慢读结果不能覆盖新缓存');
+assert.equal(hub3.latestState('race').window, 200_000);
+hub3.close();
+
+// sessionId 对不上：不写缓存（防止串会话），也不抛错。
+const hub4 = createStateHub({
+  readState: async () => ({ sessionId: 'other', revision: 9, ratio: 0.5, window: 200_000, compressHint: null }),
+});
+hub4.onSessionEvent({ id: 'want' }, {});
+await sleep(240);
+assert.equal(hub4.latestState('want'), undefined, 'state.sessionId 与缓存键不一致时不写缓存');
+hub4.close();
 
 /* ------------------------------------------------------------------ *
  * 6. prompt 适配：注册 + 同步取值 + 异常/缺缓存/缺服务全部降级为 ''
