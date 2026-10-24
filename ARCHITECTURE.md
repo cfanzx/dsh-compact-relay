@@ -34,7 +34,7 @@ lib/dsh/              能力封装层：pressure / session-view / summarizer / r
    │                  唯一 import @deepseek-ai/* 的地方；未来 DSH 升级只改这里。
 lib/core/             纯函数层：policy / ranges / prompts / handoff-doc /
    │                  validate-summary / validate-handoff / placeholders / pins / errors /
-   │                  compress-cue（0.3.4 可压缩区间提示）
+   │                  compress-cue（0.3.4 可压缩区间提示）/ markdown-lite（0.3.4 交接单轻量渲染）
    │                  + 共享件：object（isPlainObject）、tokens（token 口径/遮罩求和）
    │                  不 import 任何 DSH 包，可单测、可裸跑。
 lib/config.js         默认值 + 配置合并（阈值、颜色、保留量、dev 开关、目录）。
@@ -85,6 +85,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `core/ring.js` | `ringSegments`, `trimSegment` | 指示灯环的分段/断点纯数学（正常区灰/蓝 → 压缩区琥珀 → 交接区红；断点缺口裁切） |
 | `core/compress-hint.js` | `COMPRESS_HINT_RECORD_TYPE`, `latestCompressHint`, `compressHintIsActive` | 模型「这里适合压缩」判断：plugin record 判定、精压/交接后自动失效 |
 | `core/compress-cue.js` | `compressCueText`, `inCompressCueBand`, `bucketRatio`, `formatPercent`, `COMPRESS_CUE_NAME`, `COMPRESS_CUE_ORDER` | **0.3.4（BUG-010）可压缩区间提示的纯逻辑**：区间 `minRatio ≤ ratio < compactRatio`、容量 5% 桶取整、已记 hint 10pp 内抑制、文案（点名 `mark_compress_point`） |
+| `core/markdown-lite.js` | `parseMarkdownLite`, `parseInlineLite` | **0.3.4（BUG-005）交接单轻量 markdown 解析**：标题/段落/有序无序列表/粗体/行内代码/代码块/分隔线；输出结构化 blocks+segments，不生成 HTML（XSS 内容原样当文本）；client 片段 `16-markdown.js` 构建时内联同一源码 |
 | `core/placeholders.js` | `isPlaceholderLine`, `isPlaceholderText` | 识别 `(none)`/无/N/A 等占位，防空壳文档/摘要 |
 | `core/pins.js` | `PIN_RECORD_TYPE`, `latestPinnedSeqs`, `clipRangeByPins` | 锁定：plugin record 快照、按锁定裁剪精压范围 |
 | `core/relay.js` | `RELAY_RECORD_TYPE`, `latestRelayRecord` | 接力链记录（parent/child/index/path） |
@@ -238,7 +239,7 @@ DSH 客户端加载器要求 `package.json exports["./client"]` 指向**已构�
 
 A8（2026-10-20）之后单文件契约不变，但**源码不再是单文件**：`lib/client/*.js` 是按文件名
 排序的片段（00-header / 01-shell-open / 10-runtime / 12-colors / 13-ring / 14-theme-hook /
-15-shared / 20-format / 30-indicator / 40-handoff / 50-settings / 90-apply），由
+15-shared / 16-markdown / 20-format / 30-indicator / 40-handoff / 50-settings / 90-apply），由
 `scripts/build-client.mjs`（零依赖）拼成 `lib/client.js`。改 client 只改片段，改完运行
 `node scripts/build-client.mjs`；`npm test` 第一步是 `node scripts/build-client.mjs --check`，
 改了片段没重建会直接红。
@@ -320,6 +321,7 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 | 压缩执行流程（idle→信号→事务→摘要） | `actions/compact-run.js` | 正式精压与 `/bctest` 各写一遍事务参数 |
 | AbortSignal 组合 / inflight 登记 / 取消收口 | `actions/support.js` | 每个动作自己 `inflight.begin/finish` + 判 commit/persistence |
 | client 环几何 / 原生线 / 浮层材质 | `lib/client/15-shared.js` | 指示灯与设置页教学图各画一遍、7 处浮层各抄 5 行样式 |
+| 交接单 markdown 解析 | `core/markdown-lite.js`（client 内联） | 面板/其它入口各写一份解析/渲染 |
 
 ---
 
@@ -433,12 +435,13 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 │  ├─ client/                   # 浏览器半源码片段（按文件名排序拼接）
 │  │  ├─ 00-header.js / 01-shell-open.js / 10-runtime.js / 12-colors.js / 13-ring.js
 │  │  ├─ 14-theme-hook.js / 15-shared.js（跨片段共享：环几何/浮层材质/keyframes）
+│  │  ├─ 16-markdown.js（内联 core/markdown-lite.js + React 渲染）
 │  │  ├─ 20-format.js / 30-indicator.js / 40-handoff.js / 50-settings.js / 90-apply.js
 │  ├─ core/                     # 纯函数
 │  │  ├─ config-schema.js colors.js errors.js policy.js ranges.js prompts.js
 │  │  ├─ handoff-spec.js handoff-doc.js handoff-facts.js readiness.js
 │  │  ├─ validate-summary.js validate-handoff.js placeholders.js
-│  │  ├─ compress-hint.js compress-cue.js ring.js pins.js relay.js
+│  │  ├─ compress-hint.js compress-cue.js markdown-lite.js ring.js pins.js relay.js
 │  │  ├─ object.js（isPlainObject）/ tokens.js（token 口径）
 │  ├─ dsh/                      # 能力封装（唯一 import @deepseek-ai/* 的地方）
 │  │  ├─ engine.js pressure.js session-view.js select-range.js route.js prefix.js
