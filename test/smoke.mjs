@@ -15,6 +15,7 @@ import { ringSegments, trimSegment } from '../lib/core/ring.js';
 import { COMPRESS_HINT_RECORD_TYPE, compressHintIsActive, latestCompressHint } from '../lib/core/compress-hint.js';
 import { applyAutoOverride, parseCompactionOverride } from '../lib/dsh/native-compaction.js';
 import { markCompressHint } from '../lib/actions/compress-hint.js';
+import { createDiagCounters } from '../lib/dsh/diag-counters.js';
 import { selectFullRange, selectTestRange } from '../lib/core/ranges.js';
 import { selectCompactableRange } from '../lib/dsh/select-range.js';
 import { buildPrefix, surfaceMessages } from '../lib/dsh/prefix.js';
@@ -925,7 +926,7 @@ test('0.3.1 压缩判断记录：只认自己的类型 / 取最近一条 / check
   assert.equal(compressHintIsActive(null, 2), false);
 });
 
-test('0.3.1 markCompressHint：最小线以下 / 到压缩线都拒绝，区间内写记录', async () => {
+test('0.3.1 / 0.4 P0-1 markCompressHint：最小线以下 / 到压缩线都拒绝，区间内写记录 + 计量 U4', async () => {
   let tokens = 10_000; // 1% < 最小线 5%
   const session = {
     id: 's-hint',
@@ -935,6 +936,8 @@ test('0.3.1 markCompressHint：最小线以下 / 到压缩线都拒绝，区间�
       return this.log.length;
     },
   };
+  // 0.4 P0-1（U4）：deps.diag 注入后，每次调用都要记 markCalls / markAccepted / markRejected。
+  const diag = createDiagCounters();
   const deps = {
     ctx: {
       tokenMeter: { measure: () => ({ totalTokens: tokens, surfaceTokens: tokens, nodes: [] }) },
@@ -942,17 +945,29 @@ test('0.3.1 markCompressHint：最小线以下 / 到压缩线都拒绝，区间�
     },
     cfg: resolveConfig({}),
     engine: { appendPluginRecord: (_session, type, data) => session.appendPluginRecord(type, data) },
+    diag,
   };
+  const countersOf = () => diag.snapshot().counters;
+  assert.deepEqual(
+    { markCalls: countersOf().markCalls, markAccepted: countersOf().markAccepted, markRejected: countersOf().markRejected },
+    { markCalls: 0, markAccepted: 0, markRejected: 0 },
+  );
   const agent = { id: 'agent-hint', session };
   let result = await markCompressHint(deps, { agent });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'below-min');
-  assert.equal(session.log.length, 0);
+  assert.equal(session.log.length, 0, '被拒不改动任何历史');
+  assert.deepEqual(
+    { markCalls: countersOf().markCalls, markAccepted: countersOf().markAccepted, markRejected: countersOf().markRejected },
+    { markCalls: 1, markAccepted: 0, markRejected: 1 },
+    'below-min 被拒也要计数（被拒是零副作用的正常结果）',
+  );
 
   tokens = 420_000; // 42% > 压缩线 40%
   result = await markCompressHint(deps, { agent });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'already-over');
+  assert.equal(session.log.length, 0, 'already-over 被拒同样不改历史');
 
   tokens = 250_000; // 25%：最小线和压缩线之间
   result = await markCompressHint(deps, { agent });
@@ -960,6 +975,25 @@ test('0.3.1 markCompressHint：最小线以下 / 到压缩线都拒绝，区间�
   assert.equal(session.log.length, 1);
   assert.equal(session.log[0].type, 'plugin:compact-relay/compress-hint');
   assert.equal(Math.round(session.log[0].data.ratio * 100), 25);
+  assert.deepEqual(
+    { markCalls: countersOf().markCalls, markAccepted: countersOf().markAccepted, markRejected: countersOf().markRejected },
+    { markCalls: 3, markAccepted: 1, markRejected: 2 },
+    'U4：成功 +1 accepted、两次被拒 +2 rejected',
+  );
+
+  // 没有活动会话（工具被调用但拿不到 session）：也算一次调用 + 一次被拒。
+  result = await markCompressHint(deps, { agent: null });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'no-session');
+  const finalCounters = countersOf();
+  assert.equal(finalCounters.markCalls, 4);
+  assert.equal(finalCounters.markAccepted, 1);
+  assert.equal(finalCounters.markRejected, 3);
+  assert.equal(
+    finalCounters.markAccepted + finalCounters.markRejected,
+    finalCounters.markCalls,
+    '不变式：接受 + 拒绝 = 调用总数',
+  );
 });
 
 test('0.3.1 原生压缩配置：解析覆盖 / 写入 auto（已有条目改值、没有条目追加）', () => {

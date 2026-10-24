@@ -540,13 +540,23 @@ assert.equal(
   false,
   '0.3.4 移除「系统会告诉你容量」的假承诺（旧 mark_stage 在 427 个会话里 0 次调用的根因）',
 );
+// 0.4 P0-1（U5）：工具描述 v2 —— 明确「用户和模型都可以调用」+「被拒不需要致歉」，
+// 并保留边界（小步骤不用调用）但不再把抑制性措辞放在条件前面。
+assert.equal(compressPointTool.description.includes('用户和模型都可以调用'), true, 'U5：描述要点明用户和模型都可以调用');
+assert.equal(compressPointTool.description.includes('被拒不需要致歉'), true, 'U5：描述要说明被拒不需要致歉');
+assert.equal(compressPointTool.description.includes('不会改动历史'), true, 'U5：描述要说明被拒零副作用');
+assert.equal(compressPointTool.description.includes('典型调用时机'), true, 'U5：描述要给出典型调用时机');
+for (const signal of ['功能已实现并验证', '文档已交付', '问题已定位并修复', '准备交接']) {
+  assert.equal(compressPointTool.description.includes(signal), true, `工具描述缺少完成信号：${signal}`);
+}
+assert.equal(compressPointTool.description.includes('不需要每个小步骤都调用'), false, '抑制性措辞要弱化/移除');
 // 没有活动会话时返回可读提示（不抛错）。
 const noAgentToolText = await compressPointTool.execute({}, {});
 assert.equal(typeof noAgentToolText, 'string');
 assert.equal(noAgentToolText.includes('没有活动会话'), true);
 
 console.log('PASS  plugin apply：命令/路由/工具注册');
-console.log('PASS  mark_compress_point：工具注册 + 描述（不再有假承诺）+ 无会话提示（成功路径在 smoke 单测覆盖）');
+console.log('PASS  mark_compress_point：工具注册 + 描述 v2（用户/模型可调用、被拒不需要致歉、典型时机）+ 无会话提示');
 console.log('PASS  systemPrompt 可压缩区间提示：注册/区间内文案/区间外空串/异常安全');
 console.log('PASS  state 端点：无会话时合法 JSON');
 console.log('PASS  /api/compact-relay-stream：SSE 建流 + 首帧状态 + 未就绪自动补推');

@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased（0.4.0 P0-2：诊断包最小版）
+## Unreleased（0.4.0）
+
+### P0-1 判断机制加强（未发布，代码已落地，待 3 次真实任务验收）
+
+- **背景（BUG-010 后续）**：Windows 173 个真实会话里 cue 注入 18 次、`mark_compress_point` 调用 **0 次**；Mac 仅在「脚本写完 + 真机验证通过」这种明确节点自发调用过。归因：旧 cue 的「不确定就不用调」让模型倾向保守跳过、工具描述强调拒绝风险、每轮注入变成背景噪声。
+- **cue 文案 v2**（`lib/core/compress-cue.js`）：把抽象「自然节点」换成 4 个可自检的完成信号——功能已实现并验证 / 文档已交付 / 问题已定位并修复 / 准备交接；明确「不确定也建议调一次让工具判断：被拒绝不会改动历史、不影响会话」；保留「不处于阶段收尾就不用管」边界，删除「不确定就不用调」。
+- **注入门控**（`lib/adapters/prompt.js` + `lib/core/policy.js` 常量 `CUE_MIN_RATIO=0.10` / `CUE_MAX_RATIO=0.40` / `CUE_MIN_TURNS=3`）：只有全满足才注入——① 容量落在 `[max(10%, 动态最小线), min(40%, 压缩线))`（到压缩线不注入，避免诱导注定被拒的调用）；② 距上次注入 ≥3 轮（按 text 回调调用次数计，进程内 Map、不新增持久状态、不落盘）；③ 一轮内最多一次。异常/无 agent/无缓存行为不变（返回空串）。
+- **工具描述 v2**（`lib/adapters/tool.js`）：明确「用户和模型都可以调用」；「被拒不需要致歉、不会改动历史、也不影响会话，不需要重试」；补充典型调用时机（阶段完成 / 准备交接前 / 长任务中途确认可回退点）；把「不需要每个小步骤都调用」弱化为句尾的「小步骤不用调用」。
+- **计量接入**（`lib/dsh/diag-counters.js`、`lib/actions/compress-hint.js`、`lib/adapters/prompt.js`）：新增 `cueInjected` / `markCalls` / `markAccepted` / `markRejected` 四个计数（被拒也算调用）。只记次数与结果、不记 cue 原文/任务内容（隐私口径与 P0-2 一致）；P0-2 诊断包的 `counters` 与 Markdown 直接带出这四个数 → 真实使用后看数字即可判断「标准 B：3 次真实任务 ≥2 次模型自发调用」，不用翻会话日志。
+- **测试**：`test/compress-cue.mjs` 重写覆盖 U1（文案 v2：4 信号 + 被拒无副作用 + 不含旧措辞）、U2（区间 0.08 不注入 / 0.12 注入 / 0.40、0.45 不注入 + 第 4 轮再注入）、U3（无 agent 不注入 / 同轮不重复 / 异常降级）、U6（5% 桶 / 动态最小线 / hint 抑制 / state-hub 原有断言随 v2 同步）；`test/smoke.mjs` 增 U4（markCompressHint 成功/被拒计数 + 不变式）；`test/plugin-load.mjs` 增 U5（工具描述关键词）+ cue 门控下的 20% 注入断言；`test/diagnostics.mjs` 同步 counters 白名单/渲染。
+- **范围红线（未违反）**：不改压缩/交接行为、不改拒绝条件（最小线 5% / 压缩线 40% 不动）、不自动动作、不动指示灯客户端、零新依赖零网络、版本号仍 **0.3.6**。
+- **未完成（发布前）**：需 3 次真实长任务验证标准 B；soak 记录模板已补「判断机制读数方法」。
+
+### P0-2 诊断包最小版（已完成）
 
 - **新增「诊断信息」入口**（设置 → 压缩接力 → 帮助）：【生成并预览】在本机生成一份 Markdown + JSON 诊断信息，弹层里先预览，再【复制 Markdown】/【复制 JSON】；【打开问题报告页】打开预填版本/平台短字段的 GitHub issue 页。**不做任何自动上传、遥测或后台外发，也不加网络能力。**
 - **新增只读端点** `GET /api/compact-relay-diagnostics?sessionId=`：沿用宿主 `connection.requestRejection` 鉴权（401/403）；只支持 GET（非 GET 405）；无活动会话时 `state: null`；返回 `{ok, schema, version, generatedAt, markdown, json, issueUrl}`，响应不含正文/堆栈（失败只回短文案）。
@@ -10,7 +23,7 @@
 - **新增 `lib/actions/diagnostics.js`**：诊断组装的动作层入口（仓库 A9 架构守卫要求 adapters 不直接 import `dsh/`，故组装落在 actions，HTTP 适配层只做协议转换）。
 - **文档/模板**：README（中英）新增「诊断信息与隐私 / Diagnostics and privacy」节；`.github/ISSUE_TEMPLATE/bug_report.yml` 文案对齐「生成 → 预览 → 复制」；设置页按钮只用「生成 / 预览 / 复制」，不出现「发送 / 上传 / 上报」。
 - **测试**：新增 `test/diagnostics.mjs`（T1–T9：形状白名单、敏感 fixture 脱敏、禁止字段、零网络（fetch 抛错 + 源码扫描）、URL < 7500、64KB/20 条/200 字符上限、p50/p95、计数器、文案），并入 `npm test`；`test/plugin-load.mjs` 增加只读端点用例（鉴权 / 405 / 白名单产物 / 无会话 `state=null`）；`test/e2e/settings-ui.mjs` 增加诊断信息真机检查（帮助区入口按钮、点【生成并预览】后的弹层内容含 `dcr-diagnostics/v1` 与「脱敏」、不含 sessionId/绝对路径、点【复制 Markdown】必须有成功或失败反馈）。
-- 版本号仍保持 **0.3.6**（本轮不发布、不 bump）；`package.json` 无新增依赖，`capabilities` 未新增 network。
+- 版本号仍保持 **0.3.6**（0.4.0 未发布、不 bump）；`package.json` 无新增依赖，`capabilities` 未新增 network。
 
 ## 0.3.6（2026-10-24，原生压缩线解析作用域修复）
 

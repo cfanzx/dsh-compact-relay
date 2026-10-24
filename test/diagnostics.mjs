@@ -137,7 +137,17 @@ const DIAG_SHAPE = {
     },
     counters: {
       kind: 'object',
-      keys: { compactOk: LEAF, compactFail: LEAF, handoffOk: LEAF, handoffFail: LEAF, pins: LEAF },
+      keys: {
+        compactOk: LEAF,
+        compactFail: LEAF,
+        handoffOk: LEAF,
+        handoffFail: LEAF,
+        pins: LEAF,
+        cueInjected: LEAF,
+        markCalls: LEAF,
+        markAccepted: LEAF,
+        markRejected: LEAF,
+      },
     },
     latency: {
       kind: 'object',
@@ -408,6 +418,7 @@ test('T6 尺寸上限：JSON ≤ 64KB、errors ≤ 20 条且单条 ≤ 200 字�
     assert.equal(JSON.stringify(entry).length <= 200, true, '单条错误序列化后必须 ≤ 200 字符');
   }
   assert.equal(built.markdown.includes(CHAT_EXCERPT), false, '错误 message 不进产物');
+  assert.equal(built.markdown.includes('cue 注入'), true, 'Markdown 要带 P0-1 判断机制读数（cue 注入 / mark 调用）');
   assert.equal(built.markdown.length < 8192, true, '人读 Markdown 保持短小（方案目标 2–4KB）');
 });
 
@@ -480,6 +491,10 @@ test('T8 计数器：动作/锁定计数、错误按 (code,phase) 聚合、最�
     handoffOk: 0,
     handoffFail: 0,
     pins: 0,
+    cueInjected: 0,
+    markCalls: 0,
+    markAccepted: 0,
+    markRejected: 0,
   });
   counters.bumpAction('compact', true);
   counters.bumpAction('compact', false);
@@ -494,6 +509,10 @@ test('T8 计数器：动作/锁定计数、错误按 (code,phase) 聚合、最�
     handoffOk: 1,
     handoffFail: 1,
     pins: 2,
+    cueInjected: 0,
+    markCalls: 0,
+    markAccepted: 0,
+    markRejected: 0,
   });
 
   counters.recordError('busy', 'compact');
@@ -530,6 +549,19 @@ test('T8 计数器：动作/锁定计数、错误按 (code,phase) 聚合、最�
   abort.name = 'AbortError';
   assert.equal(errorCodeOf(abort), 'AbortError');
   assert.match(localIso(FIXED_DATE), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/u);
+
+  // 0.4 P0-1：cue 注入 / mark 调用（被拒也算调用）计量也进 counters 白名单。
+  counters.bumpCueInjected();
+  counters.bumpCueInjected();
+  counters.bumpMark(true);
+  counters.bumpMark(false);
+  counters.bumpMark(false);
+  const p01 = counters.snapshot().counters;
+  assert.equal(p01.cueInjected, 2);
+  assert.equal(p01.markCalls, 3);
+  assert.equal(p01.markAccepted, 1);
+  assert.equal(p01.markRejected, 2);
+  assert.equal(p01.markAccepted + p01.markRejected, p01.markCalls, '不变式：接受 + 拒绝 = 调用总数');
 });
 
 test('T8b 动作层埋点接线：compact/handoff 失败计数 + pin 锁定计数', async () => {
