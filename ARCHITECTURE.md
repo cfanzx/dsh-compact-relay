@@ -21,8 +21,8 @@
 ```
 lib/index.js          装配层：读配置 → 建共享依赖 → 注册入口。无业务逻辑。
    │
-lib/adapters/         入口适配层：commands.js / http.js / tool.js
-   │                  只做协议转换（参数、命令结果、HTTP JSON），不做判断。
+lib/adapters/         入口适配层：commands.js / http.js / tool.js / prompt.js（systemPrompt 动态提示）
+   │                  只做协议转换（参数、命令结果、HTTP JSON、提示文本），不做判断。
 lib/actions/          动作层：state / better-compact / handoff / test-compact / lock /
    │                  inflight（进行中登记，M6 取消）/ pin（M6 钉住）/ compress-hint（压缩判断）
    │                  + 共享执行件：support（信号/inflight/取消收口）、compact-run（压缩执行流程）
@@ -33,7 +33,8 @@ lib/dsh/              能力封装层：pressure / session-view / summarizer / r
    │                  + 共享件：compaction-pair（事件配对扫描）、model-task（模型调用装配/收尾）
    │                  唯一 import @deepseek-ai/* 的地方；未来 DSH 升级只改这里。
 lib/core/             纯函数层：policy / ranges / prompts / handoff-doc /
-   │                  validate-summary / validate-handoff / placeholders / pins / errors
+   │                  validate-summary / validate-handoff / placeholders / pins / errors /
+   │                  compress-cue（0.3.4 可压缩区间提示）
    │                  + 共享件：object（isPlainObject）、tokens（token 口径/遮罩求和）
    │                  不 import 任何 DSH 包，可单测、可裸跑。
 lib/config.js         默认值 + 配置合并（阈值、颜色、保留量、dev 开关、目录）。
@@ -83,6 +84,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `core/validate-summary.js` | `validateSummary`, `describeProblems` | 摘要六段结构校验 + 指令复述识别 |
 | `core/ring.js` | `ringSegments`, `trimSegment` | 指示灯环的分段/断点纯数学（正常区灰/蓝 → 压缩区琥珀 → 交接区红；断点缺口裁切） |
 | `core/compress-hint.js` | `COMPRESS_HINT_RECORD_TYPE`, `latestCompressHint`, `compressHintIsActive` | 模型「这里适合压缩」判断：plugin record 判定、精压/交接后自动失效 |
+| `core/compress-cue.js` | `compressCueText`, `inCompressCueBand`, `bucketRatio`, `formatPercent`, `COMPRESS_CUE_NAME`, `COMPRESS_CUE_ORDER` | **0.3.4（BUG-010）可压缩区间提示的纯逻辑**：区间 `minRatio ≤ ratio < compactRatio`、容量 5% 桶取整、已记 hint 10pp 内抑制、文案（点名 `mark_compress_point`） |
 | `core/placeholders.js` | `isPlaceholderLine`, `isPlaceholderText` | 识别 `(none)`/无/N/A 等占位，防空壳文档/摘要 |
 | `core/pins.js` | `PIN_RECORD_TYPE`, `latestPinnedSeqs`, `clipRangeByPins` | 锁定：plugin record 快照、按锁定裁剪精压范围 |
 | `core/relay.js` | `RELAY_RECORD_TYPE`, `latestRelayRecord` | 接力链记录（parent/child/index/path） |
@@ -108,7 +110,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/compact-transaction.js` | `replaceRangeWithSummary` | **唯一替换事务**：start → summary → replace → end |
 | `dsh/idle.js` | `runIdle` | `runMaintenance()` 封装 + busy/abort 映射 |
 | `dsh/sessions.js` | `createHandoffSession`, `childTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入 |
-| `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`，对 SSE 订阅者去抖推送 `readState` |
+| `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`：对 SSE 订阅者去抖推送 `readState`；0.3.4 起**无论有无订阅者都维护最新状态缓存**（`latestState(sessionId)` → `{ratio, window, compressHint}`），供 systemPrompt 同步读取 |
 | `dsh/site-info.js` | `buildSiteSnapshot`, `gitInfo`, `pendingJobs` | 交接单现场快照（启动时长、git、后台任务、模型），只读 |
 | `dsh/handoff-files.js` | `listHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限） |
 | `dsh/session-files.js` | `changedFilesOf` | 从会话日志收集写/改过的文件（交接单程序段） |
@@ -143,7 +145,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 |---|---|
 | `adapters/commands.js` | 注册 `/bc`（预览/confirm）`/handoff` `/pin` `/unpin` `/bctest`(dev) |
 | `adapters/http.js` | `GET /api/compact-relay-state`、`-stream`（SSE）、`-handoffs`、`-diff`、`-settings`；`POST /api/compact-relay-action`（preview/compact/cancel/pin-toggle/handoff/handoff-preview/native-auto） |
-| `adapters/tool.js` | `mark_stage` 工具：模型判断「这里适合压缩」→ `actions/compress-hint.js` → plugin record |
+| `adapters/tool.js` | `mark_compress_point` 工具（0.3.4 改名，旧名 `mark_stage`）：模型判断「压缩节点」→ `actions/compress-hint.js` → plugin record |
+| `adapters/prompt.js` | `registerCompressCue` / `compressCueFor`：注册 systemPrompt 动态 context（order 300），同步读状态缓存给出「可压缩区间」提示；异常/缺服务返回 ''，不影响宿主 |
 
 ## 3. 接口契约（关键签名）
 
@@ -287,7 +290,7 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 | `compactCheckpointSource` / `isCompactCheckpointSource` | `@deepseek-ai/dsh-compaction` | checkpoint 标记，DSH 各处靠它识别「这是压缩摘要」 |
 | `createUserMessage` | `@deepseek-ai/dsh-llm` | 构造合法的 checkpoint user message |
 | `appendPluginRecord` | `@deepseek-ai/dsh-session` | 压缩判断记录/锁定/接力链的持久化（写 `plugin:` 事件，不进模型 surface） |
-| `defineTool` | `@deepseek-ai/dsh-tools` | M4 注册 `mark_stage` 工具（参数/输出 schema、render） |
+| `defineTool` | `@deepseek-ai/dsh-tools` | M4 注册 `mark_compress_point` 工具（参数/输出 schema、render） |
 
 **不复制** `@deepseek-ai/dsh-compaction-basic` 的整段事务代码——只用它的公共 API（上表），
 选段策略和摘要 prompt 用我们自己的。
@@ -308,6 +311,8 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 | 配对平衡 / checkpoint 判定 | DSH 包（import） | 自己复写 |
 | client 的阈值/颜色 | host `readState` | client 自己拿 token 算 |
 | 压缩判断记录类型 / 新鲜度判定 | `core/compress-hint.js` | state、工具、测试各写一份 plugin record 判定 |
+| 可压缩区间提示文案 / 桶 / 抑制 | `core/compress-cue.js` | systemPrompt、工具、客户端各写一套容量判断 |
+| 状态缓存（提示同步读） | `dsh/state-hub.js` `latestState` | 提示回调里自己 measure / 各存一份 ratio |
 | 普通对象判定（`isPlainObject`） | `core/object.js` | config/设置文件/actions 各写一份 |
 | token 口径 / 遮罩 token 求和 | `core/tokens.js` | 选段、state、预览、执行各写一遍 `heuristicTokens ?? tokens` |
 | summary/end/replace 配对扫描 | `dsh/compaction-pair.js` | countSummaries 与压缩历史各扫一遍日志 |
@@ -340,8 +345,9 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 
 ## 8.5 作用域铁律（2026-10-19 第一次重启踩的坑）
 
-- 根级插件只能 inject **根服务**：`commands` / `agents` / `tokenMeter` / `llm` / `sessions`；
-  `webServer` 用 `ctx.inject(['webServer'], cb)` 单独要。
+- 根级插件只能 inject **根服务**：`commands` / `agents` / `tokenMeter` / `llm` / `sessions` / `tools` / `systemPrompt`；
+  `webServer` 用 `ctx.inject(['webServer'], cb)` 单独要。0.3.4 起 `systemPrompt` 用于注入「可压缩区间」
+  动态提示（缺该服务的宿主会在 apply 里守卫跳过，不影响其它入口）。
 - **`compaction` 是 agent 作用域**：它挂在每个 agent preset 的隔离组里
   （`@deepseek-ai/dsh-web-app/presets/*.patch.yml` 的 `isolate: {compaction:true}`）。
   根插件把 `'compaction'` 写进 `inject` 会永远 `pending (waiting for service: compaction)`，
@@ -432,7 +438,7 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 │  │  ├─ config-schema.js colors.js errors.js policy.js ranges.js prompts.js
 │  │  ├─ handoff-spec.js handoff-doc.js handoff-facts.js readiness.js
 │  │  ├─ validate-summary.js validate-handoff.js placeholders.js
-│  │  ├─ compress-hint.js ring.js pins.js relay.js
+│  │  ├─ compress-hint.js compress-cue.js ring.js pins.js relay.js
 │  │  ├─ object.js（isPlainObject）/ tokens.js（token 口径）
 │  ├─ dsh/                      # 能力封装（唯一 import @deepseek-ai/* 的地方）
 │  │  ├─ engine.js pressure.js session-view.js select-range.js route.js prefix.js
@@ -447,7 +453,7 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 │  │  ├─ lock.js inflight.js pin.js compress-hint.js native-compaction.js
 │  │  ├─ compact-run.js（压缩执行流程）/ support.js（信号/inflight/取消收口）
 │  └─ adapters/                 # 入口适配
-│     ├─ commands.js / http.js / tool.js
+│     ├─ commands.js / http.js / tool.js / prompt.js
 └─ test/
    ├─ smoke.mjs / handoff.mjs / plugin-load.mjs / contract.mjs / compact-log.mjs
    ├─ harness/                  # A7：统一 mock（host / session / llm / dsh-stubs）

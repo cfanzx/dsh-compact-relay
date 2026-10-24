@@ -95,10 +95,10 @@ function defaultEffect(handler) {
  * @param {boolean} [options.webServer] 根 ctx 是否直接带 webServer（默认 false，走 inject 子 ctx）
  * @param {object} [options.logger]
  * @param {number|undefined} [options.connectionRejection] 初始鉴权拒绝码（undefined=放行）
- * @returns {{ctx:object, commands:object[], routes:object[], tools:object[], eventHandlers:object[], makeContext:Function, setConnectionRejection:Function}}
+ * @returns {{ctx:object, commands:object[], routes:object[], tools:object[], eventHandlers:object[], promptContexts:object[], makeContext:Function, setConnectionRejection:Function}}
  */
 export function createFakeHost(options = {}) {
-  const registrations = { commands: [], routes: [], tools: [], eventHandlers: [] };
+  const registrations = { commands: [], routes: [], tools: [], eventHandlers: [], promptContexts: [] };
   const auth = { rejection: options.connectionRejection };
   const services = options.services ?? {};
   const logger = options.logger ?? { info() {}, warn() {} };
@@ -123,6 +123,14 @@ export function createFakeHost(options = {}) {
       on(name, listener) {
         registrations.eventHandlers.push({ name, listener });
         return () => {};
+      },
+      // 0.3.4：systemPrompt 服务替身（动态「可压缩区间」提示）。只记录 context 注册，
+      // text 由用例显式调用；真实宿主行为见 @deepseek-ai/dsh-system-prompt。
+      systemPrompt: {
+        context(definition) {
+          registrations.promptContexts.push(definition);
+          return () => {};
+        },
       },
       inject(_names, callback) {
         callback(makeContext(true));
@@ -153,6 +161,7 @@ export function createFakeHost(options = {}) {
     routes: registrations.routes,
     tools: registrations.tools,
     eventHandlers: registrations.eventHandlers,
+    promptContexts: registrations.promptContexts,
     makeContext,
     setConnectionRejection(value) {
       auth.rejection = value;

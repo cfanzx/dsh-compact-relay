@@ -38,6 +38,13 @@ const laterSession = {
   surface: { nodes: [] },
   requestHeader: () => ({ config: { provider: 'deepseek-official', model: 'deepseek-flash' } }),
 };
+// 0.3.4（BUG-010）：动态提示用例要一个「落在可压缩区间」的会话（200K 窗口里 40K = 20%）。
+const cueSession = {
+  id: 'session-cue',
+  log: [],
+  surface: { nodes: [] },
+  requestHeader: () => ({ config: { provider: 'deepseek-official', model: 'deepseek-flash' } }),
+};
 const host = createFakeHost({
   services: {
     agents: { get: () => undefined, list: () => [] },
@@ -48,11 +55,18 @@ const host = createFakeHost({
           laterLookups += 1;
           return laterLookups > 2 ? laterSession : undefined;
         }
+        if (id === 'session-cue') return cueSession;
         return undefined;
       },
       flush() {},
     },
-    tokenMeter: { measure: () => ({ totalTokens: 1234, surfaceTokens: 1000, nodes: [] }) },
+    // session-cue 用 20% 容量（可压缩区间内），其余会话保持 1234 token（区间外）。
+    tokenMeter: {
+      measure: (session) =>
+        session?.id === 'session-cue'
+          ? { totalTokens: 40_000, surfaceTokens: 40_000, nodes: [] }
+          : { totalTokens: 1234, surfaceTokens: 1000, nodes: [] },
+    },
     llm: createFakeLlm({ modelInfo: { context: { contextWindow: 200_000 } } }),
   },
 });
@@ -75,7 +89,8 @@ apply(ctx, {
 assert.equal(name, 'compact-relay');
 assert.equal(Array.isArray(inject), true);
 assert.equal(inject.includes('compaction'), false, 'compaction 是 agent 作用域服务，不能放进根插件 inject');
-assert.equal(inject.includes('tools'), true, 'M4 需要根级 tools 服务来注册 mark_stage');
+assert.equal(inject.includes('tools'), true, 'M4 需要根级 tools 服务来注册 mark_compress_point');
+assert.equal(inject.includes('systemPrompt'), true, '0.3.4 需要根级 systemPrompt 注入「可压缩区间」提示');
 assert.deepEqual(
   host.commands.map((definition) => definition.name).sort(),
   ['bc', 'bctest', 'handoff', 'pin', 'unpin'],
@@ -98,9 +113,31 @@ assert.deepEqual(
 );
 assert.deepEqual(
   host.tools.map((definition) => definition.name),
-  ['mark_stage'],
-  'M4：阶段完成工具必须注册',
+  ['mark_compress_point'],
+  '0.3.4：压缩节点工具必须注册（旧名 mark_stage）',
 );
+
+// 0.3.4（BUG-010）：systemPrompt 动态提示 —— 注册 + 区间内文案 + 区间外空串 + 异常安全。
+assert.equal(host.promptContexts.length, 1, '应注册一条「可压缩区间」动态 runtime context');
+const cueContext = host.promptContexts[0];
+assert.equal(cueContext.name, 'compact-relay:compress-cue');
+assert.equal(cueContext.order, 300);
+assert.equal(typeof cueContext.text, 'function');
+// 缓存由 session/event 防抖更新：驱动一条事件后等 150ms 去抖结束。
+host.eventHandlers[0].listener({ id: 'session-cue' }, { type: 'user/message' });
+await new Promise((resolve) => setTimeout(resolve, 320));
+const cueText = cueContext.text({ agent: { id: 'agent-cue', session: { id: 'session-cue' } } });
+assert.equal(typeof cueText, 'string');
+assert.equal(cueText.includes('mark_compress_point'), true, '区间内提示要点名工具');
+assert.equal(cueText.includes('20%'), true, '容量按 5% 桶显示 20%');
+// 区间外（session-live 只有 1234/200000 ≈ 0.6%，低于最小压缩线）→ 空串。
+host.eventHandlers[0].listener({ id: 'session-live' }, { type: 'user/message' });
+await new Promise((resolve) => setTimeout(resolve, 320));
+assert.equal(cueContext.text({ agent: { session: { id: 'session-live' } } }), '', '区间外不提示');
+// 异常安全：text 回调不能把宿主组装 prompt 搞挂。
+assert.equal(cueContext.text(undefined), '');
+assert.equal(cueContext.text({ get agent() { throw new Error('boom'); } }), '');
+assert.equal(cueContext.text({ agent: { session: { id: 'session-not-loaded' } } }), '', '缓存没有就返回空串');
 
 // M5：SSE 路由能建流、首帧带最新状态（无活动会话时也能给出合法 JSON）。
 const streamRes = openSse(host, '/api/compact-relay-stream?sessionId=session-e2e');
@@ -336,6 +373,7 @@ const emptyDocs = await callRouteAsync(host, '/api/compact-relay-handoffs');
 assert.equal(emptyDocs.status, 200);
 assert.equal(emptyDocs.body.ok, true);
 assert.deepEqual(emptyDocs.body.items, []);
+assert.equal(emptyDocs.body.total, 0, '0.3.4（BUG-006）：列表端点要报 total');
 
 const sampleName = 'handoff-2026-10-19T12-31-42-001Z.md';
 fs.writeFileSync(
@@ -347,6 +385,7 @@ const listedDocs = await callRouteAsync(host, '/api/compact-relay-handoffs?limit
 assert.equal(listedDocs.body.items.length, 1);
 assert.equal(listedDocs.body.items[0].name, sampleName);
 assert.equal(listedDocs.body.items[0].sourceTitle, '样本会话');
+assert.equal(listedDocs.body.total, 1);
 const docDetail = await callRouteAsync(host, `/api/compact-relay-handoffs?file=${encodeURIComponent(sampleName)}`);
 assert.equal(docDetail.status, 200);
 assert.equal(docDetail.body.content.includes('## 目标'), true);
@@ -354,6 +393,26 @@ const badFile = await callRouteAsync(host, '/api/compact-relay-handoffs?file=..%
 assert.equal(badFile.status, 404, '目录穿越/非法文件名必须拒绝');
 const wrongExt = await callRouteAsync(host, '/api/compact-relay-handoffs?file=other.md');
 assert.equal(wrongExt.status, 404);
+
+// 0.3.4（BUG-006）：total 报全量、limit 只控窗口；「加载更多」用 limit=50 看全部。
+for (let index = 0; index < 24; index += 1) {
+  const name = `handoff-2026-10-19T12-31-42-${String(index + 2).padStart(3, '0')}Z.md`;
+  fs.writeFileSync(
+    path.join(handoffDir, name),
+    `# 交接单 ${index}\n\n- 生成时间：2026-10-19T12:31:42.001Z\n- 原会话标题：样本 ${index}\n\n## 目标\n- x\n`,
+    'utf8',
+  );
+}
+const pageDocs = await callRouteAsync(host, '/api/compact-relay-handoffs?limit=20');
+assert.equal(pageDocs.body.total, 25, 'total 要报全部交接单数量（不受 limit 截断）');
+assert.equal(pageDocs.body.items.length, 20, '默认只回最近 20 份');
+const moreDocs = await callRouteAsync(host, '/api/compact-relay-handoffs?limit=50');
+assert.equal(moreDocs.body.total, 25);
+assert.equal(moreDocs.body.items.length, 25, '加载更多（limit=50）要能看到全部 25 份');
+const defaultDocs = await callRouteAsync(host, '/api/compact-relay-handoffs');
+assert.equal(defaultDocs.body.items.length, 20, '不传 limit 默认 20');
+assert.equal(defaultDocs.body.total, 25);
+
 fs.rmSync(handoffDir, { recursive: true, force: true });
 
 const bcDef = host.commands.find((definition) => definition.name === 'bc');
@@ -446,25 +505,31 @@ assert.equal(typeof bctestResult.text, 'string');
 const badArg = await bctest.handler({ rawInput: 'whatever', agent: null, signal: undefined, commandId: 'cmd-test' });
 assert.equal(badArg.kind, 'error');
 
-const markStageTool = host.tools.find((definition) => definition.name === 'mark_stage');
-assert.equal(typeof markStageTool.execute, 'function');
-assert.equal(typeof markStageTool.description, 'string');
-assert.equal(markStageTool.description.includes('适合压缩'), true, '工具描述要讲清「判断这里适合压缩」');
+const compressPointTool = host.tools.find((definition) => definition.name === 'mark_compress_point');
+assert.equal(typeof compressPointTool.execute, 'function');
+assert.equal(typeof compressPointTool.description, 'string');
+assert.equal(compressPointTool.description.includes('压缩节点'), true, '工具描述要讲清「记录一个压缩节点」');
+assert.equal(compressPointTool.description.includes('适合把前面的旧历史压成摘要'), true);
+assert.equal(
+  compressPointTool.description.includes('系统会告诉你'),
+  false,
+  '0.3.4 移除「系统会告诉你容量」的假承诺（旧 mark_stage 在 427 个会话里 0 次调用的根因）',
+);
 // 没有活动会话时返回可读提示（不抛错）。
-const noAgentToolText = await markStageTool.execute({}, {});
+const noAgentToolText = await compressPointTool.execute({}, {});
 assert.equal(typeof noAgentToolText, 'string');
 assert.equal(noAgentToolText.includes('没有活动会话'), true);
 
 console.log('PASS  plugin apply：命令/路由/工具注册');
-console.log('PASS  mark_stage：工具注册 + 无会话提示（成功路径在 smoke 单测覆盖）');
+console.log('PASS  mark_compress_point：工具注册 + 描述（不再有假承诺）+ 无会话提示（成功路径在 smoke 单测覆盖）');
+console.log('PASS  systemPrompt 可压缩区间提示：注册/区间内文案/区间外空串/异常安全');
 console.log('PASS  state 端点：无会话时合法 JSON');
 console.log('PASS  /api/compact-relay-stream：SSE 建流 + 首帧状态 + 未就绪自动补推');
 console.log('PASS  action 端点：sessionId 缺失/类型错/非法 JSON/跨站/超大 body 均被拒；无会话时 409（含 preview/cancel/pin-toggle）');
-console.log('PASS  /api/compact-relay-handoffs：列表/读取/非法文件名拒绝');
+console.log('PASS  /api/compact-relay-handoffs：列表/读取/非法文件名拒绝 + total/加载更多（BUG-006）');
 console.log('PASS  /api/compact-relay-settings：读取/保存热生效/非法比例/跨站/恢复默认');
 console.log('PASS  /bc：预览/confirm 参数校验 + input.hint');
-console.log('PASS  /stage：手动阶段标记（自定义名/缺省名/无会话报错）');
 console.log('PASS  /pin、/unpin：钉住最近一轮 / 列表 / 清空');
 console.log('PASS  /bctest：无 agent / 参数错误都返回 error');
 console.log('PASS  /handoff：无 agent / 参数错误都返回 error');
-console.log('\n13/13 passed');
+console.log('\n14/14 passed');
