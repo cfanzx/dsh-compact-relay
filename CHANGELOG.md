@@ -4,6 +4,15 @@
 
 （暂无新改动）
 
+## 0.3.5（2026-10-24，压缩按钮误禁修复）
+
+- **问题（外部用户报告，0.3.3 / Windows；0.3.4 源码同样存在）**：会话用量 53.5%、插件建议压缩，但指示灯菜单「压缩旧会话」灰置，提示「暂无可压缩内容（会话太短，或近期会话需保留原文）」——把「没有活的 agent」误当成「没有可压缩内容」。
+- **根因**：`readState` 的 target 允许退化成「有内容、但还没有活 agent」的 passivized live session（压力/比例能测出来），但 `compactRange` 只在有活 agent 时计算 → 客户端收到 `null` 后禁用按钮并显示通用「暂无可压内容」文案。
+- **修复（additive，HTTP 契约不破坏）**：`lib/actions/state.js` 对 target（含 passivized live session）也计算 `compactRange`（纯显示信息；真正执行/preview 仍要求活 agent）；新增字段 `compactRangeReason`，仅当范围存在且无活 agent 时为 `'no_agent'`。
+- **客户端**：菜单「压缩旧会话」在 `reason === 'no_agent'` 时仍禁用（预览需要活 agent），但文案改为「**会话未激活：发一条消息唤醒 agent 后可压 N 条 · 约 X tokens**」（含实际数字；禁用态悬停 `title` 可读）；`rangeInfo === null` 与正常可压的既有文案不变。
+- **测试**：新增 `test/state-passive.mjs`（无活 agent 的 live session 仍算出范围 + `reason='no_agent'`；有活 agent `reason=null`；空会话/无会话不误报；既有 state 字段不丢），并入 `npm test`。
+- 测试基线：smoke 53/53、handoff 35/35、plugin-load 14/14、contract 17/17、compact-log PASS、compress-cue PASS、state-passive PASS、markdown-lite PASS；client bundle `--check` 通过（148857 字符）。
+
 ## 0.3.4（2026-10-24，判断机制修复 + 小 bug）
 
 ### 判断机制（BUG-010：适合压缩的节点几乎不触发）
