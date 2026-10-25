@@ -24,6 +24,16 @@ const handoffDir = createTmpDir('relay-load-handoffs-');
 // 设置存储：隔离一个 DSH_HOME，别读写真实的 ~/.dsh/compact-relay.json。
 const dshHome = createTmpDir('relay-load-home-');
 process.env.DSH_HOME = dshHome;
+// 0.4.2：用临时 profile 固定 DSH 原生压缩配置（auto=true / thresholdRatio=0.8），
+// 让「交接线上限」的服务端校验不依赖本机 ~/.dsh/profiles/desktop。
+// desktop-host 也是把 profile 目录当命令行参数传进来（见 dsh/native-compaction.js:resolveProfileDir）。
+const profileDir = createTmpDir('relay-load-profile-');
+fs.writeFileSync(
+  path.join(profileDir, 'cordis.patch.yml'),
+  ['- id: compaction-basic', '  config:', '    auto: true', '    thresholdRatio: 0.8', ''].join('\n'),
+  'utf8',
+);
+process.argv.push(profileDir);
 // M5 修复：会话已加载但还没有 agent 时，state 也要能用 live session 测出数字。
 const liveSession = {
   id: 'session-live',
@@ -282,6 +292,38 @@ const badSettings = callRoute(host, '/api/compact-relay-settings', {
 await sleep(80);
 assert.equal(badSettings.status, 400);
 assert.equal(JSON.parse(badSettings.body).ok, false, '非法比例必须被拒');
+
+// ---- 0.4.2（P0-2）：服务端保存与 UI 同口径 ----
+// 客户端带 nativeRatio（当前模型实际触发线）→ 按「实际线 −5pp」校验交接线；
+// 不带（旧客户端）→ 退回配置阈值 −1pp 兜底（0.4.1 行为）。一律 400 + field + 目标值。
+const postSettings = async (body) => {
+  const res = callRoute(host, '/api/compact-relay-settings', { method: 'POST', body: JSON.stringify(body) });
+  await sleep(80);
+  return { status: res.status, body: JSON.parse(res.body) };
+};
+// H1：67.8% 实际线 → 65% 超上限（62%），拒绝并给目标值。
+const nativeOver = await postSettings({ thresholds: { handoffRatio: 0.65 }, nativeRatio: 0.678 });
+assert.equal(nativeOver.status, 400, '带 nativeRatio 的超限交接线必须被拒');
+assert.equal(nativeOver.body.ok, false);
+assert.equal(nativeOver.body.field, 'thresholds.handoffRatio', '错误要带 field 供设置页定位');
+assert.equal(nativeOver.body.message.includes('最高可设 62%'), true, `文案要给目标值，实际：${nativeOver.body.message}`);
+assert.equal(nativeOver.body.message.includes('67.8%'), true, '文案要说明实际触发线');
+// H2：62%（上限）通过并落盘。
+const nativeAtCap = await postSettings({ thresholds: { handoffRatio: 0.62 }, nativeRatio: 0.678 });
+assert.equal(nativeAtCap.status, 200);
+assert.equal(nativeAtCap.body.config.thresholds.handoffRatio, 0.62);
+// H3：不带 nativeRatio（0.4.1 客户端）保存 65% → 允许（兜底上限 79%）。
+const legacySave = await postSettings({ thresholds: { handoffRatio: 0.65 } });
+assert.equal(legacySave.status, 200, '旧客户端不带 nativeRatio 不能因为新规则被拒');
+assert.equal(legacySave.body.config.thresholds.handoffRatio, 0.65);
+// H4：带 nativeRatio 保存 85% → 仍按实际线（62%）而不是配置阈值（79%）拒绝。
+const farOver = await postSettings({ thresholds: { handoffRatio: 0.85 }, nativeRatio: 0.678 });
+assert.equal(farOver.status, 400);
+assert.equal(farOver.body.message.includes('最高可设 62%'), true);
+assert.equal(farOver.body.message.includes('79%'), false, '带了实际线就不该再按配置阈值给上限');
+// 恢复一次合法值，避免后续用例受 0.85 影响（reset 之前这一步会失败在 resolveConfig 之外）。
+const backToDefault = await postSettings({ thresholds: { handoffRatio: 0.6 } });
+assert.equal(backToDefault.status, 200);
 
 const crossSiteSettings = callRoute(host, '/api/compact-relay-settings', {
   method: 'POST',

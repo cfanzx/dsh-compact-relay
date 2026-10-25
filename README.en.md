@@ -67,6 +67,16 @@ Running `/pin` marks messages that must be preserved during compaction. Pinned m
 
 ![Crossing the native auto-compaction line](assets/native-alert.jpg)
 
+## The three lines (deepseek-flash, 1M window defaults)
+
+| Line | Default | Meaning | How to change |
+| --- | --- | --- | --- |
+| Compaction line | 40% | The ring turns amber and the menu suggests "compact old session" | Settings → Compact Relay |
+| Handoff line | 60% | The inner dot turns red and the menu suggests "hand off to a new session" | Settings → Compact Relay; **hard cap = actual trigger −5pp** (62% for deepseek-flash) |
+| Native auto-compaction line | 67.8% | Where DSH actually auto-compacts, computed from its token budget (the configured 80% is only a theoretical ceiling; output reservation + DSH headroom pull it down to 67.8% for deepseek-flash) | `thresholdRatio` of `compaction-basic` in the profile (default 80%) |
+
+**Why the handoff line keeps a 5-point margin**: the handoff reminder must fire before DSH compacts on its own, otherwise there is no time to generate a handoff document and open the new session. Since 0.4.2 the handoff line is hard-capped at **actual trigger −5pp** (floored to a whole percent; 62% for deepseek-flash on a 1M window). Going over **rejects the save and shows the target value** — values are never silently clamped. Existing higher values are not rewritten behind your back, but the settings page keeps warning and offers a one-click "recalculate from actual line". When the actual trigger line is unavailable (no session / host did not report it), nothing is warned or blocked and save validation falls back to the configured threshold guard (same as 0.4.1).
+
 ## Installation
 
 **Requirements**: DSH Desktop or `dsh web` 0.2.x (tested on 0.2.1-rc.2), Node.js 22+ (the plugin uses the runtime bundled with DSH). Running the source test suite requires Node **22.15+** (the harness uses `node:module.registerHooks`). The suite is verified on macOS and Windows 11 (Node 24.22).
@@ -143,7 +153,7 @@ The first time a session is opened, the ring plays a brief highlight animation w
 
 ## Version and license
 
-- **Current version**: 0.4.1 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixed the compression-point judgment mechanism; 0.3.5 fixed the disabled compress button; 0.3.6 fixed the native-line parsing scope; 0.4.0 hardened the judgment mechanism, added diagnostics, pin retention, ledger, handoff metadata and the real native trigger line; 0.4.1 unified the native-line display: the ring, the settings page and the teaching card all show the actual trigger point with the configured threshold annotated). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
+- **Current version**: 0.4.2 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixed the compression-point judgment mechanism; 0.3.5 fixed the disabled compress button; 0.3.6 fixed the native-line parsing scope; 0.4.0 hardened the judgment mechanism, added diagnostics, pin retention, ledger, handoff metadata and the real native trigger line; 0.4.1 unified the native-line display: the ring, the settings page and the teaching card all show the actual trigger point with the configured threshold annotated; 0.4.2 is the handoff-line safety patch: hard cap = actual trigger −5pp with the same rule in the UI and on the server, over-limit saves are rejected with the target value, warnings in three places plus a one-click recalculation, a one-off notice after switching models, and documentation of the 40/60/67.8 lines). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
 - **License**: [MIT](LICENSE). Feedback and Pull Requests are welcome via [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues).
 
 ## Credits
