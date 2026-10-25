@@ -134,7 +134,7 @@
 | [dsh-command-context-trim](https://www.npmjs.com/package/dsh-command-context-trim) | 0.6.6 / 10-03 | 无模型 `/trim`、小窗口切换 | 切掉 |
 | [context-vista](https://www.npmjs.com/package/context-vista) | 0.1.0 / 08-14 | 环图、成本估算 | 仪表盘不做 |
 | [dsh-compressor](https://www.npmjs.com/package/dsh-compressor) | 0.1.0 / 08-15 | 工具结果压缩 + retrieve | 压缩不做 |
-| [dsh-context-guard](https://github.com/wood20100715-collab/dsh-context-guard) | 仓库 | 内容类型压缩 + CCR + 高保真摘要 | 智能保留不自研 |
+| dsh-context-guard（原 https://github.com/wood20100715-collab/dsh-context-guard 已失效，2026-10-25 核查 404） | 仓库 | 内容类型压缩 + CCR + 高保真摘要 | 智能保留不自研 |
 | [dsh-session-handoff](https://github.com/snow-The/dsh-session-handoff) | GitHub | 结构化交接文档 + 官方 compaction API | 交接同赛道；我们做"检查 + 链 + 记忆" |
 
 ## 六、已定决策

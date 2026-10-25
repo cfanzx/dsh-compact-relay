@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.4.1-blue)](CHANGELOG.md)
 
 </div>
 
@@ -30,7 +30,7 @@
 
 ### 1. 状态可视化监控
 
-指示环按压缩评估逻辑分段显色，分别标识模型或阈值判定的建议压缩点、已锁定消息位置，以及 DSH 原生自动压缩线（默认 80%）。当上下文占用越过原生自动压缩线时，整环呈红色闪烁告警。
+指示环按压缩评估逻辑分段显色，分别标识模型或阈值判定的建议压缩点、已锁定消息位置，以及 DSH 原生自动压缩线（按宿主实际 token 预算算出的触发点：deepseek-flash 约 67.8%，配置阈值默认 80%）。当上下文占用越过原生自动压缩线时，整环呈红色闪烁告警。
 
 上下文进入「可压缩区间」（最小压缩线到压缩线之间）时，插件会在系统提示里主动告诉模型当前容量与区间，模型据此判断「刚完成一个自然节点」时是否记录压缩节点（0.3.4 起；此前模型看不到容量，判断条件不可执行）。
 
@@ -61,7 +61,7 @@
 | 琥珀色弧 | 已越过压缩判断点，适合执行压缩 |
 | 红色弧 | 已越过交接阈值，建议切换新会话 |
 | 环形缺口 | 建议压缩点（系统在可压缩区间主动提示模型判断；模型记录或到达压缩线时自动出现） |
-| 紫色刻度 | DSH 原生自动压缩线（读取 `compaction-basic.thresholdRatio`，默认 80%） |
+| 紫色刻度 | DSH 原生自动压缩线：按 `min(窗口 × thresholdRatio, 窗口 − 输出预留 − headroomTokens)` 算出的**实际触发点**（deepseek-flash 约 67.8%；`thresholdRatio` 配置默认 80%，只是理论上限） |
 | 品红色块 | 已锁定消息在历史记录中的分布位置 |
 | 整环红色闪烁 | 已越过原生自动压缩线，即将触发 DSH 原生自动压缩 |
 
@@ -89,7 +89,7 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 
 - **压缩提示**：配置最小压缩线、压缩提醒线与交接提醒线，控制告警触发时机。
 - **压缩行为**：配置摘要保留份数上限、近期原文保留 Token 数及交接文档存储目录。
-- **DSH 原生自动压缩**：读取宿主当前阈值，支持开启或关闭 DSH 原生自动压缩（修改 profile 配置前自动生成备份，重启后生效）。
+- **DSH 原生自动压缩**：读取宿主阈值并换算实际触发线，支持开启或关闭 DSH 原生自动压缩（修改 profile 配置前自动生成备份，重启后生效）。
 - **颜色与外观**：配置五项基准色，系统将根据浅色/深色主题自动派生适配色阶。
 - **帮助**：提供指示环图例、使用说明、问题反馈入口、「再看一次初次引导」按钮，以及「诊断信息」（只在本机生成、可预览/复制，见下节）。
 - **关于与危险操作**：查看版本号、配置文件路径，支持恢复出厂默认设置。
@@ -143,7 +143,7 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 
 ## 版本状态与开源许可
 
-- **当前版本**：0.4.0（0.3.1 为首个公开版本；0.3.2 修正设置页链接与联系方式；0.3.3 完成 Windows 适配；0.3.4 修复判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包（脱敏诊断信息，一键复制/预览）、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
+- **当前版本**：0.4.0（0.3.1 为首个公开版本；0.3.2 修正设置页链接与联系方式；0.3.3 完成 Windows 适配；0.3.4 修复判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包（脱敏诊断信息，一键复制/预览）、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线；**0.4.1** 统一原生压缩线显示口径：指示灯 / 设置页 / 教学卡都显示实际触发点，并注明配置阈值与输出预留）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
 - **开源许可**：采用 [MIT](LICENSE) 许可证，欢迎通过 [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues) 与 Pull Requests 提交反馈。
 
 ## 参考与致谢

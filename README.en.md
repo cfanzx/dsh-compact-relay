@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.4-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.4.1-blue)](CHANGELOG.md)
 
 </div>
 
@@ -30,7 +30,7 @@ The plugin mounts beside the existing composer. Default parameters are tuned for
 
 ### 1. Occupancy visualization
 
-The ring is colored in segments according to the compression-assessment logic: the suggested compression point determined by the model or configured threshold, the positions of pinned messages, and the DSH native auto-compaction line (80% by default). When occupancy crosses the native auto-compaction line, the ring flashes red.
+The ring is colored in segments according to the compression-assessment logic: the suggested compression point determined by the model or configured threshold, the positions of pinned messages, and the DSH native auto-compaction line (the actual trigger point computed from the host token budget: ~67.8% for deepseek-flash, while the configured threshold defaults to 80%). When occupancy crosses the actual trigger point, the ring flashes red.
 
 When occupancy enters the compressible band (between the minimum compression line and the compression line), the plugin proactively tells the model the current occupancy and band through a dynamic system-prompt context, so it can decide whether to record a compression node after finishing a natural milestone (since 0.3.4; before that the model could not see occupancy, so the condition was not actionable).
 
@@ -61,7 +61,7 @@ Running `/pin` marks messages that must be preserved during compaction. Pinned m
 | Amber arc | The compression point has been passed; compaction is suitable |
 | Red arc | The handoff threshold has been passed; switching to a new session is recommended |
 | Ring notch | Suggested compression point (the system proactively prompts the model to assess inside the compressible band; shown after the model records one or the compression line is reached) |
-| Violet tick | DSH native auto-compaction line (reads `compaction-basic.thresholdRatio`, 80% by default) |
+| Violet tick | DSH native auto-compaction line: the actual trigger point computed as `min(window × thresholdRatio, window − reserved output − headroomTokens)` (~67.8% for deepseek-flash; the configured `thresholdRatio` defaults to 80% and is only a theoretical ceiling) |
 | Magenta blocks | Distribution of pinned messages in the history |
 | Full-ring red flash | The native auto-compaction line has been crossed; DSH native auto-compaction is imminent |
 
@@ -143,7 +143,7 @@ The first time a session is opened, the ring plays a brief highlight animation w
 
 ## Version and license
 
-- **Current version**: 0.3.4 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixes the compression-point judgment mechanism and adds handoff Markdown rendering plus list load-more). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
+- **Current version**: 0.4.1 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixed the compression-point judgment mechanism; 0.3.5 fixed the disabled compress button; 0.3.6 fixed the native-line parsing scope; 0.4.0 hardened the judgment mechanism, added diagnostics, pin retention, ledger, handoff metadata and the real native trigger line; 0.4.1 unified the native-line display: the ring, the settings page and the teaching card all show the actual trigger point with the configured threshold annotated). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
 - **License**: [MIT](LICENSE). Feedback and Pull Requests are welcome via [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues).
 
 ## Credits

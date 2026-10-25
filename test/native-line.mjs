@@ -11,6 +11,7 @@
  * 路由策略匹配、以及 readState 下发的 native 字段（真实线 + 老字段兼容）。
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { nativeLineOf, NATIVE_HEADROOM_DEFAULT } from '../lib/core/native-line.js';
 import { parseCompactionOverride, parseModelPolicies, resolveNativePolicy } from '../lib/dsh/native-compaction.js';
 import { readState } from '../lib/actions/state.js';
@@ -188,6 +189,78 @@ test('0.4 P2-3 readState：算不出真实线时 ratio=null + unavailable 原因
   assert.equal(state.native.ratio, null);
   assert.equal(state.native.unavailable, 'no-budget');
   assert.equal(state.native.thresholdRatio, 0.8, '老字段仍给窗口比例，客户端可回落');
+});
+
+/* 0.4.1 显示口径：客户端必须同时给出「实际触发」与「配置阈值」两个数（防止再回退成只写配置的 80%）。 */
+const clientBundle = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+assert.ok(clientBundle.includes('实际触发'), '客户端应显示实际触发线');
+assert.ok(clientBundle.includes('配置阈值'), '客户端应注明配置阈值');
+assert.ok(clientBundle.includes('nativeLineInfo'), '客户端应复用 nativeLineInfo 计算显示值');
+
+/* 0.4.1 行为回归：nativeLineInfo 五组输入（从客户端源码切出函数真跑，不只做字符串 includes 检查）。 */
+const formatSource = fs.readFileSync(new URL('../lib/client/20-format.js', import.meta.url), 'utf8');
+const sliceFn = (startMarker) => {
+  const start = formatSource.indexOf(startMarker);
+  assert.ok(start >= 0, `客户端源码缺少 ${startMarker}`);
+  const end = formatSource.indexOf('\n    };', start);
+  assert.ok(end > start, `客户端源码里 ${startMarker} 没有闭合`);
+  return formatSource.slice(start, end + '\n    };'.length);
+};
+const clientFns = new Function(`${sliceFn('    const fmt = (n) => {')}\n${sliceFn('    const nativeLineInfo = (native) => {')}\nreturn { nativeLineInfo };`)();
+const nativeBase = {
+  autoEnabled: true,
+  thresholdRatio: 0.8,
+  ratio: 0.678464,
+  thresholdTokens: 678464,
+  contextWindow: 1000000,
+  reservedCompletionTokens: 256000,
+  headroomTokens: 65536,
+  overridden: false,
+};
+
+test('0.4.1 nativeLineInfo：正常线给出 67.8/80、两种口径都在、原因指向输出预留', () => {
+  const info = clientFns.nativeLineInfo(nativeBase);
+  assert.equal(info.percentText, '67.8');
+  assert.equal(info.configuredText, '80');
+  assert.equal(info.actualText, '67.8');
+  assert.equal(info.differs, true);
+  assert.equal(info.autoOff, false);
+  assert.ok(info.why.includes('理论上限') && info.why.includes('256.0K'), `why 应说明预留，实际：${info.why}`);
+});
+
+test('0.4.1 nativeLineInfo：autoEnabled=false 时 percentText 为空但 actualText 仍给实际值（关闭态不再出空百分比）', () => {
+  const info = clientFns.nativeLineInfo({ ...nativeBase, autoEnabled: false });
+  assert.equal(info.autoOff, true);
+  assert.equal(info.percentText, '', '关闭态不表示「当前生效」');
+  assert.equal(info.actualText, '67.8', '关闭态仍要能说「开启后会触发多少」');
+  assert.equal(info.differs, false);
+});
+
+test('0.4.1 nativeLineInfo：算不出实际线（ratio=null）安全回落配置阈值', () => {
+  const info = clientFns.nativeLineInfo({ ...nativeBase, ratio: null, thresholdTokens: null });
+  assert.equal(info.effective, 0.8);
+  assert.equal(info.percentText, '80');
+  assert.equal(info.differs, false);
+});
+
+test('0.4.1 nativeLineInfo：modelPolicies 路由覆盖时不误归因为输出预留', () => {
+  const info = clientFns.nativeLineInfo({ ...nativeBase, overridden: true, ratio: 0.5, thresholdTokens: 500000 });
+  assert.equal(info.percentText, '50');
+  assert.ok(info.why.includes('路由覆盖'), `why 应说明路由覆盖，实际：${info.why}`);
+  assert.ok(!info.why.includes('理论上限'), '路由覆盖不该套「理论上限」说法');
+});
+
+test('0.4.1 nativeLineInfo：实际触发晚于配置阈值时不再说「理论上限」', () => {
+  const info = clientFns.nativeLineInfo({
+    ...nativeBase,
+    overridden: false,
+    ratio: 0.93,
+    thresholdTokens: 930000,
+    reservedCompletionTokens: 8000,
+  });
+  assert.equal(info.percentText, '93');
+  assert.ok(info.why.includes('晚于配置阈值'), `why 应说明晚于配置，实际：${info.why}`);
+  assert.ok(!info.why.includes('理论上限'));
 });
 
 /* 运行全部用例（异步用例逐个 await；失败即退出非 0）。 */
