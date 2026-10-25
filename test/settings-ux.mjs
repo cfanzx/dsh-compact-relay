@@ -385,8 +385,90 @@ test('0.4.2 设置页：交接线 65 + 服务端拒绝 → nativeRatio 透传，
   assert.ok(textOf(inline).includes('67.8%') && textOf(inline).includes('最高可设 62%'));
 
   // 失败不清表单（用户改过的 65 还在，方便直接改）。
-  assert.equal(handoffInput(renderer.tree).props.value, 65);
+  // 0.4.2 修复后输入框显示的是「草稿字符串」（用户打什么显示什么），所以断言字符串 '65'。
+  assert.equal(handoffInput(renderer.tree).props.value, '65');
 });
+
+test('0.4.2 设置页（真机 bug）：交接线输入 80 原样保留、不被改成 99；保存被拒给目标值；改 62 保存成功', async () => {
+  const messageOf = (ratio) => handoffGuard({ actualRatio: 0.678, configuredRatio: 0.8, handoffRatio: ratio, compactRatio: 0.4 }).message;
+  const message80 = messageOf(0.8);
+  assert.ok(message80.includes('最高可设 62%'), '测试基准：guard 对 80% 应给出「最高可设 62%」');
+
+  // 服务端同口径替身：超过 62% → 400 + field；62% 及以下 → 200 并回写配置。
+  const { renderer, posts } = await mountSettings({
+    onPost: async (body) => {
+      const ratio = body.thresholds.handoffRatio;
+      if (ratio > 0.62) return jsonResponse(400, { ok: false, message: messageOf(ratio), field: 'thresholds.handoffRatio' });
+      const nextConfig = { ...BASE_CONFIG, thresholds: { ...BASE_CONFIG.thresholds, handoffRatio: ratio } };
+      return jsonResponse(200, { ok: true, ...SETTINGS_VIEW, config: nextConfig });
+    },
+  });
+
+  const inputNow = () => handoffInput(renderer.tree);
+  assert.equal(inputNow().props.value, '60', '初始交接线应为 60（默认 0.6）');
+  assert.equal(inputNow().props.max, 62, 'input 的 max 应该是当前真实上限 62，而不是 99');
+
+  // ① 清空准备重打：以前空串会被 Number('')/100 → 夹成 0.05 → 显示 5%，用户根本打不出新值。
+  inputNow().props.onChange({ target: { value: '' } });
+  await renderer.settle();
+  assert.equal(inputNow().props.value, '', '清空后应保持空，不该自己跳成 5');
+  // 失焦丢弃草稿 → 回到表单值（表单没被空输入改动，仍是 60）。
+  inputNow().props.onBlur();
+  await renderer.settle();
+  assert.equal(inputNow().props.value, '60', '空输入失焦后应回到原值 60，而不是留下 5');
+
+  // ② 真机键序（旧 bug 的最短复现）：输入框显示 60，光标在末尾敲 8 → 浏览器给的是 "608"。
+  //    旧代码 Math.min(0.99, 6.08) → 0.99 → 显示 99（用户看到「输入 80 变成 99」）。
+  inputNow().props.onChange({ target: { value: '608' } });
+  await renderer.settle();
+  assert.equal(inputNow().props.value, '608', '用户输入什么就显示什么：不能被夹成 99');
+  assert.notEqual(inputNow().props.value, 99);
+
+  // ③ 重新输入 80：全选后打字（真机 select() 已验证会替换），逐键 8 → 80。
+  inputNow().props.onChange({ target: { value: '8' } });
+  await renderer.settle();
+  assert.equal(inputNow().props.value, '8');
+  inputNow().props.onChange({ target: { value: '80' } });
+  await renderer.settle();
+  assert.equal(inputNow().props.value, '80', '输入 80 后输入框必须还是 80');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-dirty').props['data-cr-dirty'], '1', '改过 80 后应显示未保存');
+
+  // 上限提示可见，但只是提示（不改写输入）。
+  assert.ok(textOf(findByAttr(renderer.tree, 'data-cr-handoff-cap')).includes('最高可设 62%'));
+  assert.equal(textOf(findByAttr(renderer.tree, 'data-cr-handoff-cap-chip')).trim(), '最高 62%');
+
+  // ④ 保存 80 → 服务端拒绝（400 + field），条内与行内都出现「最高可设 62%」。
+  findByAttr(renderer.tree, 'data-cr-save').props.onClick();
+  await renderer.settle();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].thresholds.handoffRatio, 0.8, 'POST 必须是用户输入的 0.8，不能是 0.99');
+  assert.ok(!posts.some((body) => body.thresholds.handoffRatio === 0.99), '任何一次保存都不该出现 0.99');
+
+  const status = findByAttr(renderer.tree, 'data-cr-save-status');
+  assert.equal(status.props['data-cr-save-status'], 'error');
+  assert.ok(textOf(status).includes('最高可设 62%'), `条内应给目标值，实际：${textOf(status)}`);
+  const inline = findByAttr(renderer.tree, 'data-cr-handoff-error');
+  assert.ok(inline !== null, '交接线行内必须同时出现错误');
+  assert.equal(textOf(inline), message80, '行内文案沿用服务端 guard.message');
+  assert.ok(textOf(inline).includes('67.8%') && textOf(inline).includes('最高可设 62%'));
+  assert.equal(inputNow().props.value, '80', '被拒后用户的 80 还在，方便直接改');
+
+  // ⑤ 改成 62 → 保存成功（服务端 200），输入框与状态都跟上。
+  inputNow().props.onChange({ target: { value: '62' } });
+  await renderer.settle();
+  assert.equal(inputNow().props.value, '62');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-handoff-error'), null, '重新输入后旧错误应清掉');
+  findByAttr(renderer.tree, 'data-cr-save').props.onClick();
+  await renderer.settle();
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].thresholds.handoffRatio, 0.62);
+  const ok = findByAttr(renderer.tree, 'data-cr-save-status');
+  assert.equal(ok.props['data-cr-save-status'], 'ok');
+  assert.ok(textOf(ok).includes('已保存'));
+  assert.equal(findByAttr(renderer.tree, 'data-cr-dirty').props['data-cr-dirty'], '0', '保存成功后不再脏');
+  assert.equal(inputNow().props.value, '62', '保存成功后显示保存下来的 62');
+});
+
 
 test('0.4.2 设置页：保存成功也在粘性条里可见（成功状态不再只写页尾）', async () => {
   const nextConfig = { ...BASE_CONFIG, thresholds: { ...BASE_CONFIG.thresholds, handoffRatio: 0.61 } };
