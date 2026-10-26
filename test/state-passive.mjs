@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { readState } from '../lib/actions/state.js';
 import { createLock } from '../lib/actions/lock.js';
 import { resolveConfig } from '../lib/config.js';
+import { RELAY_RECORD_TYPE } from '../lib/core/relay.js';
 import { MockSession } from './harness/session.mjs';
 
 const cfg = resolveConfig({ retention: { recentTailTokens: 0 } });
@@ -128,6 +129,8 @@ function sessionWithMessages(id = 'session-passive') {
   assert.equal(state.sessionId, null);
   assert.equal(state.compactRange, null);
   assert.equal(state.compactRangeReason, null);
+  assert.equal(state.relay, null, '没有会话 → 没有接力链记录');
+  assert.equal(state.chain, null, '没有会话 → 没有链投影（0.5.0 F4）');
 }
 
 /* ------------------------------------------------------------------ *
@@ -214,6 +217,103 @@ function checkpointDepsOf(session) {
   assert.equal(state.compressHint.seq, 2);
 }
 
+/* ------------------------------------------------------------------ *
+ * 7. 0.5.0 F4：readState.relay 扩成只读 chain
+ *
+ * 链信息全部来自会话日志里的那条 relay record（不解析标题、不猜默认值）：
+ *   - 新记录（F3 写在子会话里）→ 六个字段都可读，path 有才带；
+ *   - 旧记录（0.3/0.4，无 scheme/baseTitle）→ 对应字段 null，链号仍可读；
+ *   - 没有记录 → chain=null；
+ *   - 旧字段 relay 一个不改（canonical/旧名/F2 字段都还能读）。
+ * ------------------------------------------------------------------ */
+
+/** 造一个带 relay 记录的会话（记录内容按场景给定）。 */
+function sessionWithRelay(id, data) {
+  return new MockSession({
+    id,
+    cwd: undefined,
+    agentPreset: undefined,
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '交接单' } },
+      { type: RELAY_RECORD_TYPE, ignorable: true, data },
+    ],
+  });
+}
+
+{
+  // 新记录：F3 写入的字段齐全（parentId/childId/ordinal/baseTitle/scheme/path）。
+  const path = '/Users/x/.dsh/sessions/child-1/session.jsonl';
+  const session = sessionWithRelay('session-chain-full', {
+    parentId: 'parent-1',
+    childId: 'child-1',
+    ordinal: 2,
+    baseTitle: '原会话标题',
+    title: '交接第 2 次：原会话标题',
+    scheme: 'handoff-n',
+    titleSeq: 7,
+    path,
+    at: 111,
+    atIso: '2026-10-26T12:00:00+08:00',
+  });
+  const state = await readState(depsOf({ liveSession: session }), { sessionId: session.id });
+
+  assert.deepEqual(
+    state.chain,
+    {
+      ordinal: 2,
+      baseTitle: '原会话标题',
+      parentId: 'parent-1',
+      childId: 'child-1',
+      scheme: 'handoff-n',
+      path,
+    },
+    'chain 必须是 relay 记录的只读投影（六个字段，path 有则带）',
+  );
+  // 旧字段原样：canonical + 0.3 旧名 + 0.4.3 F2 字段都还能读（客户端兼容）。
+  assert.equal(state.relay.parentId, 'parent-1');
+  assert.equal(state.relay.parentSessionId, 'parent-1');
+  assert.equal(state.relay.ordinal, 2);
+  assert.equal(state.relay.index, 2);
+  assert.equal(state.relay.childId, 'child-1');
+  assert.equal(state.relay.baseTitle, '原会话标题');
+  assert.equal(state.relay.scheme, 'handoff-n');
+  assert.equal(state.relay.titleSeq, 7);
+  assert.equal(state.relay.path, path);
+  // SSE 帧体积：chain 只多一小块（~100B 量级），不能把标题/日志正文搬进帧里。
+  assert.equal(JSON.stringify(state.chain).length < 512, true, 'chain 投影不能撑大 SSE 帧');
+}
+
+{
+  // 旧记录（0.3 写法：只有 index/parentSessionId/childId/at，没有 scheme/baseTitle/path）。
+  const session = sessionWithRelay('session-chain-legacy', {
+    parentSessionId: 'parent-0',
+    childId: 'child-0',
+    index: 1,
+    at: 9,
+  });
+  const state = await readState(depsOf({ liveSession: session }), { sessionId: session.id });
+
+  assert.deepEqual(
+    state.chain,
+    { ordinal: 1, baseTitle: null, parentId: 'parent-0', childId: 'child-0', scheme: null },
+    '旧记录：链号可从 index 兼容读出，scheme/baseTitle 取不到就是 null（不猜）',
+  );
+  assert.equal('path' in state.chain, false, '记录没有 path 时 chain 不带这个键');
+  // 旧字段读取语义不变（旧记录仍按原来的 normalizeRelayRecord 结果下发）。
+  assert.equal(state.relay.ordinal, 1);
+  assert.equal(state.relay.scheme, null);
+  assert.equal(state.relay.baseTitle, undefined, '旧字段保持原样：记录没有 baseTitle 就不出现');
+}
+
+{
+  // 没有 relay 记录：chain=null（老会话/从未交接），不是空对象。
+  const session = sessionWithMessages('session-chain-none');
+  const state = await readState(depsOf({ liveSession: session }), { sessionId: session.id });
+  assert.equal(state.relay, null);
+  assert.equal(state.chain, null);
+}
+
 console.log('PASS  0.3.5 state：无活 agent 的 live session 仍算出可压范围 + reason=no_agent');
 console.log('PASS  0.3.5 state：有活 agent reason=null；空会话/无会话不误报');
-console.log('PASS  0.4 BUG-013 state：checkpoint 之后的旧 compressHint 失效 / 更新的 hint 保留'); 
+console.log('PASS  0.4 BUG-013 state：checkpoint 之后的旧 compressHint 失效 / 更新的 hint 保留');
+console.log('PASS  0.5.0 F4 state：relay 扩成只读 chain（新记录全字段、旧记录 null、无记录 null、旧字段不变）');
