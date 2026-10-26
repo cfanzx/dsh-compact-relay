@@ -24,10 +24,12 @@ import { createInflight } from '../lib/actions/inflight.js';
 import { listPins, pinByIndex, pinLastTurn, togglePin, unpinAll } from '../lib/actions/pin.js';
 import { testCompact } from '../lib/actions/test-compact.js';
 import { PIN_RECORD_TYPE } from '../lib/core/pins.js';
+import { RELAY_RECORD_TYPE } from '../lib/core/relay.js';
 import { createLedgerStore } from '../lib/dsh/ledger.js';
 import { buildSiteSnapshot, gitInfo, pendingJobs } from '../lib/dsh/site-info.js';
 import { livePinnedSeqs } from '../lib/dsh/session-view.js';
-import { childTitleOf } from '../lib/dsh/sessions.js';
+import { childTitleOf, createHandoffSession, handoffTitlePlanOf } from '../lib/dsh/sessions.js';
+import { relayRecordOf } from '../lib/dsh/relay.js';
 import { HANDOFF_PREAMBLE } from '../lib/core/prompts.js';
 import { HANDOFF_SECTIONS } from '../lib/core/handoff-doc.js';
 import { REQUIRED_SECTIONS } from '../lib/core/validate-summary.js';
@@ -264,6 +266,36 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(text.includes('原会话：source-session'), true);
   for (const section of HANDOFF_SECTIONS) assert.equal(text.includes(`## ${section}`), true);
   assert.deepEqual(record.child.log.map((event) => event.type).slice(0, 2), ['user/message', 'turn/start']);
+
+  // 5.7) 0.5.0 F3：子会话自己带一条接力链记录（旧会话改名后链号不靠标题解析）。
+  const childRelays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
+  assert.equal(childRelays.length, 1, '子会话日志恰有 1 条 relay 记录');
+  const childRelayEvent = childRelays[0];
+  const childRelay = childRelayEvent.data;
+  assert.equal(childRelayEvent.ignorable, true, '走 plugin record 通道（不进模型上下文）');
+  assert.equal(record.child.surface.nodes.includes(childRelayEvent.seq), false, '记录不进模型可见 surface（不算 token）');
+  assert.equal(childRelayEvent.seq, record.child.log.length - 1, '写在 followup 之后、flush 之前（日志最后一条）');
+  assert.equal(childRelay.parentId, 'source-session');
+  assert.equal(childRelay.childId, result.childId);
+  assert.equal(childRelay.ordinal, 1, '子会话记录 ordinal=1');
+  assert.equal(childRelay.baseTitle, '原会话标题');
+  assert.equal(childRelay.title, '交接第 1 次：原会话标题');
+  assert.equal(childRelay.scheme, 'handoff-n');
+  assert.equal(Number.isInteger(childRelay.at), true);
+  assert.equal(typeof childRelay.atIso, 'string', '时间字段与父记录同格式');
+  assert.equal(childRelay.titleSeq, null, '默认替身 rename 不返回 eventSeq → null（取不到不猜）');
+  assert.equal('historyTitle' in childRelay, false, 'handoff-n 记录不写 historyTitle');
+  // 标准读取器能读回新字段；链号从子会话记录推进（这里标题是干净的原题，解析必得 0）。
+  const childRead = relayRecordOf(record.child);
+  assert.equal(childRead.ordinal, 1);
+  assert.equal(childRead.index, 1, 'normalize 补齐 0.3 旧字段别名');
+  assert.equal(childRead.parentSessionId, 'source-session');
+  assert.equal(childRead.scheme, 'handoff-n');
+  assert.equal(childRead.titleSeq, null);
+  const nextPlan = handoffTitlePlanOf(ctx, record.child);
+  assert.equal(nextPlan.viaRecord, true, '下一次交接必须走 record，不回退标题解析');
+  assert.equal(nextPlan.index, 2, '0.5.0 子会话标题变干净后，链号仍靠 record 递增（不重复 1）');
+  assert.equal(nextPlan.baseTitle, '原会话标题');
 });
 
 test('A1b 交接预览：九段草稿 + 就绪清单，不写盘/不建会话/不压历史', async () => {
@@ -374,7 +406,7 @@ test('P2-2 接力链元数据：链式第 2 次交接 ordinal=2、parent 指向�
       at: 1,
     },
   });
-  const { ctx, engine } = makeCtx();
+  const { ctx, engine, record } = makeCtx();
   const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-p22-') });
   const result = await handoff(deps, { agent: createAgent(session), commandId: 'cmd-handoff-2' });
 
@@ -388,6 +420,68 @@ test('P2-2 接力链元数据：链式第 2 次交接 ordinal=2、parent 指向�
   assert.equal(typeof latest.atIso, 'string', '带可读本地时间');
   const doc = fs.readFileSync(result.path, 'utf8');
   assert.equal(doc.includes('- 交接序号：第 2 次交接'), true, '交接单头显示第 2 次交接');
+
+  // 0.4.4 F3：子会话记录接着父记录的链（2），不是重新从 1 开始。
+  const childRelays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
+  assert.equal(childRelays.length, 1);
+  assert.equal(childRelays[0].data.ordinal, 2);
+  assert.equal(childRelays[0].data.baseTitle, '原会话标题');
+  assert.equal(childRelays[0].data.scheme, 'handoff-n');
+  assert.equal(handoffTitlePlanOf(ctx, record.child).index, 3, '第三次交接从子会话记录继续');
+});
+
+test('0.4.4 F3：rename 快照的 eventSeq → 子会话记录 titleSeq；0/缺失都不写非法值', async () => {
+  {
+    const session = baseSourceSession();
+    const { ctx, engine, record } = makeCtx({ renameEventSeq: 12 });
+    const child = await createHandoffSession({
+      ctx,
+      engine,
+      session,
+      doc: '# 交接单\n\n## 目标\n- F3 titleSeq 数字路径',
+      title: '交接第 1 次：原会话标题',
+    });
+    assert.equal(child.childId, record.child.id);
+    const relays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
+    assert.equal(relays.length, 1);
+    assert.equal(relays[0].data.titleSeq, 12, 'rename 返回的 eventSeq 要写进子会话记录');
+    assert.equal(relayRecordOf(record.child).titleSeq, 12, 'normalize 能读回数字 titleSeq');
+    assert.equal(
+      session.log.some((event) => event.type === RELAY_RECORD_TYPE),
+      false,
+      'createHandoffSession 只写子会话；父记录由 handoff 编排写',
+    );
+  }
+  {
+    const session = baseSourceSession();
+    const { ctx, engine, record } = makeCtx({ renameEventSeq: 0 });
+    await createHandoffSession({ ctx, engine, session, doc: 'doc', title: '交接第 1 次：原会话标题' });
+    const relays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
+    assert.equal(relays[0].data.titleSeq, null, 'eventSeq=0 不在 relay 白名单（正整数）内 → null，不写非法值');
+    assert.equal(relayRecordOf(record.child).titleSeq, null);
+    assert.equal(relayRecordOf(record.child).ordinal, 1, 'titleSeq 缺失不影响链号');
+  }
+});
+
+test('0.4.4 F3 端到端：第 1 次交接的子会话再交接 → 第 2 次（标题干净也不重复）', async () => {
+  const session = baseSourceSession();
+  const { ctx, engine, record } = makeCtx();
+  const firstDeps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-f3-chain-1-') });
+  await handoff(firstDeps, { agent: createAgent(session) });
+  const child = record.child;
+  assert.equal(relayRecordOf(child).ordinal, 1, '第 1 次交接的子会话带 ordinal=1 记录');
+
+  // 0.5.0 场景：子会话标题里不再有「交接第 N 次」（fixture 的标题服务恒返回原题）。
+  // 没有子会话记录时 splitHandoffTitle('原会话标题') → handedOff=0，会再出「第 1 次」。
+  const secondDeps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-f3-chain-2-') });
+  const second = await handoff(secondDeps, { agent: createAgent(child) });
+  const grandchild = record.child;
+  const doc = fs.readFileSync(second.path, 'utf8');
+  assert.equal(doc.includes('- 交接序号：第 2 次交接'), true, '第 2 次交接序号必须递增，不重复第 1 次');
+  assert.equal(second.childId, grandchild.id);
+  assert.equal(relayRecordOf(grandchild).ordinal, 2, '孙会话记录 ordinal=2');
+  assert.equal(relayRecordOf(grandchild).baseTitle, '原会话标题');
+  assert.equal(grandchild.log.filter((event) => event.type === RELAY_RECORD_TYPE).length, 1);
 });
 
 test('M3：文档结构不合格 → 带 recovery 重试一次，仍不合格则拒绝且不建会话', async () => {

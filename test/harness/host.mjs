@@ -282,6 +282,7 @@ export function createPluginDeps({ ctx, engine, handoffDir, cfg, lock } = {}) {
  * @param {object} options.llm createFakeLlm() 的返回值（必传；route 已在测试侧配好）
  * @param {object} [options.engine]
  * @param {boolean} [options.childHasFollowup] 新会话 agent 是否支持 followup（默认 true）
+ * @param {number} [options.renameEventSeq] rename 返回的标题事件 seq（真实 DSH 快照带 eventSeq；默认不返回）
  * @param {boolean} [options.agentPresetsBroken] agentPresets.resolve 是否抛错
  * @param {boolean} [options.registryBroken] workspaceRegistry.create 是否抛错
  * @param {boolean} [options.reset] 建 ctx 时是否清插件级缓存（默认 true，避免用例串味）
@@ -292,6 +293,7 @@ export function createHandoffHost({
   llm,
   engine = createFakeEngine(),
   childHasFollowup = true,
+  renameEventSeq,
   agentPresetsBroken = false,
   registryBroken = false,
   reset = true,
@@ -384,6 +386,9 @@ export function createHandoffHost({
             },
             rename(session, title) {
               record.renames.push({ sessionId: session.id, title });
+              // 真实 DSH 0.2：rename 返回折叠快照（含 eventSeq），不是日志事件。
+              // 默认替身不返回（覆盖「取不到就 null」）；需要数字路径的用例传 renameEventSeq。
+              return renameEventSeq === undefined ? undefined : { title, eventSeq: renameEventSeq };
             },
           };
         case 'sessionProjections':
