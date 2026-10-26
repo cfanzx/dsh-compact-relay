@@ -303,6 +303,9 @@ export function createHandoffHost({
   sessionTitleText = '原会话标题',
   agentPresetsBroken = false,
   registryBroken = false,
+  registryMissing = false,
+  archiveBroken = false,
+  archiveActive = null,
   reset = true,
   tokenMeter,
   services = {},
@@ -322,6 +325,45 @@ export function createHandoffHost({
     llmCalls: llm.calls,
     child: null,
     presetSetup: null,
+    // 0.5.0：旧会话归档/恢复观测点。
+    archiveCalls: [],
+    unarchiveCalls: [],
+    archivedSessionIds: [],
+  };
+
+  // 0.5.0：workspaceRegistry 替身。除 create/attachSession 外，补上真实 registry
+  // 的归档接缝（archiveSession / unarchiveSession / archivedSessionIds），
+  // 这样 handoff 的自动归档在单测里走的是与宿主同形的调用路径。
+  const archived = new Set();
+  const registry = {
+    async create(cwd) {
+      if (registryBroken) throw new Error('workspace registry down');
+      return {
+        async attachSession(sessionId) {
+          record.attached.push({ cwd, sessionId });
+        },
+      };
+    },
+    async archiveSession(sessionId, options = {}) {
+      record.archiveCalls.push({ sessionId, options });
+      if (archiveBroken) throw new Error('archive store down');
+      if (Array.isArray(archiveActive)) {
+        const error = new Error(`cannot archive session '${sessionId}': the session is active`);
+        error.name = 'WorkspaceActiveSessionError';
+        error.activity = archiveActive;
+        throw error;
+      }
+      archived.add(sessionId);
+      record.archivedSessionIds = [...archived];
+    },
+    async unarchiveSession(sessionId) {
+      record.unarchiveCalls.push(sessionId);
+      archived.delete(sessionId);
+      record.archivedSessionIds = [...archived];
+    },
+    get archivedSessionIds() {
+      return [...archived];
+    },
   };
 
   const ctx = {
@@ -376,16 +418,7 @@ export function createHandoffHost({
             },
           };
         case 'workspaceRegistry':
-          return {
-            async create(cwd) {
-              if (registryBroken) throw new Error('workspace registry down');
-              return {
-                async attachSession(sessionId) {
-                  record.attached.push({ cwd, sessionId });
-                },
-              };
-            },
-          };
+          return registryMissing ? undefined : registry;
         case 'sessionTitle':
           return {
             get() {

@@ -4,14 +4,15 @@
  *   node test/relay-bar.mjs
  *
  * 锁住四层：
- *   1. 客户端产物：`conversation.input.dock` 注册 + 接力条标记真的进了 lib/client.js；
+ *   1. 客户端产物：`conversation.input.dock` 注册 + 接力条标记 + 恢复入口真的进了 lib/client.js；
  *   2. 显示条件：chain 非 null 且是本会话入站记录才渲染；无 chain / 老宿主没有
  *      chain 字段 / 出站记录 → 返回 null（不占高度）；
- *   3. 文案与菜单：新链「历史 N：原名」、旧链「交接第 N 次：原名」；菜单三项
- *      （查看交接单 / 回到原会话 / 路线图占位），无 path 时「查看交接单」禁用并显示
- *      「暂无交接单」；
+ *   3. 文案与菜单：新链「历史 N：原名」、旧链「交接第 N 次：原名」；菜单入口
+ *      （查看交接单 / 回到原会话 / 恢复旧会话 / 路线图占位），无 path 时「查看交接单」
+ *      禁用并显示「暂无交接单」；父会话已归档时出现「恢复旧会话」；
  *   4. 交互与定位：点这一行→ fixed + 向上弹的菜单（bottom 定位、z-index 顶层），
- *      回到原会话调用注入的 openSession(parentId)，交接单走
+ *      回到原会话调用注入的 openSession(parentId)，已归档/未知时先走
+ *      ctx.uiWorkspace.unarchiveSession（老宿主退回 HTTP recover），交接单走
  *      `/api/compact-relay-handoffs?file=<basename>`（不是全路径）。
  *
  * 不引 jsdom / React：用极简 React 替身把真实 bundle 的组件跑起来（与
@@ -155,13 +156,15 @@ function jsonResponse(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }
 
-function loadBundle() {
+function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
   const react = createReactFacade();
   const registered = {};
   const exported = {};
   const fetches = [];
   const listeners = {};
   const stateResponses = new Map();
+  const actionCalls = [];
+  const unarchiveCalls = [];
   let stateResponse = { ok: true, chain: null };
   let docResponse = { ok: true, name: 'handoff-x.md', path: '/tmp/handoffs/handoff-x.md', content: '# 交接单\n- 条目' };
 
@@ -213,6 +216,10 @@ function loadBundle() {
       return Promise.resolve(jsonResponse(200, typeof response === 'function' ? response() : response));
     }
     if (typeof url === 'string' && url.startsWith('/api/compact-relay-handoffs?file=')) return Promise.resolve(jsonResponse(200, docResponse));
+    if (url === '/api/compact-relay-action' && options?.method === 'POST') {
+      actionCalls.push(JSON.parse(options.body));
+      return Promise.resolve(jsonResponse(200, { ok: true, recovered: true, message: '已恢复旧会话' }));
+    }
     return Promise.reject(new Error(`未预期的请求：${url}`));
   };
   sandbox.__ModuleLoader__ = {
@@ -241,6 +248,14 @@ function loadBundle() {
       openSession(sessionId) {
         openCalls.push(sessionId);
       },
+      ...(withUnarchive
+        ? {
+            async unarchiveSession(sessionId) {
+              unarchiveCalls.push(sessionId);
+              if (unarchiveError) throw new Error('unarchive rejected by host');
+            },
+          }
+        : {}),
     },
   };
   exported.module.apply(ctx);
@@ -265,7 +280,7 @@ function loadBundle() {
   function fire(type, event) {
     for (const handler of listeners[type] ?? []) handler(event);
   }
-  return { registered, sandbox, fetches, openCalls, setState, setDoc, mount, fire };
+  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, mount, fire };
 }
 
 const SESSION_ID = 'session-new-0001';
@@ -298,6 +313,10 @@ test('客户端产物：input.dock 注册 + 接力条标记 + 主题 token 都�
     '已接力自',
     '查看交接单',
     '回到原会话',
+    '恢复旧会话',
+    "'data-cr-relay-parent-archived'",
+    "action: 'recover'",
+    'ctx.uiWorkspace?.unarchiveSession',
     '路线图（即将上线）',
     '暂无交接单',
   ]) {
@@ -381,13 +400,14 @@ test('会话还没被宿主加载（sessionId=null）：短重试后补上接力
 
 test('新链：一行「已接力自 历史 1：原名 ▾」，fixed 向上弹、顶层', async () => {
   const harness = loadBundle();
-  harness.setState({ ok: true, chain: CHAIN });
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true });
   const renderer = harness.mount(SESSION_ID);
   renderer.renderOnce();
   await renderer.settle();
 
   const bar = findByAttr(renderer.tree, 'data-cr-relay-bar');
   assert.ok(bar !== null, '有链时应渲染接力条');
+  assert.equal(bar.props['data-cr-relay-parent-archived'], 'true', '已归档状态应透到 DOM（调试/测试用）');
   assert.equal(bar.props['data-cr-relay-ordinal'], '1');
   assert.equal(bar.props['data-cr-relay-scheme'], 'history-n');
   assert.equal(bar.props['aria-expanded'], false);
@@ -419,9 +439,12 @@ test('新链：一行「已接力自 历史 1：原名 ▾」，fixed 向上弹�
   assert.equal(menu.props.style.top, undefined, '向上弹时不应同时写 top');
   assert.equal(findByAttr(renderer.tree, 'data-cr-relay-bar').props['aria-expanded'], true);
 
-  // 三个入口，顺序与文案固定。
+  // 四个入口，顺序与文案固定（父会话已归档 → 多一个「恢复旧会话」）。
   const actions = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] !== undefined).map((node) => node.props['data-cr-relay-action']);
-  assert.deepEqual(actions, ['doc', 'parent', 'roadmap']);
+  assert.deepEqual(actions, ['doc', 'parent', 'unarchive', 'roadmap']);
+  const restoreItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0];
+  assert.ok(textOf(restoreItem).includes('恢复旧会话'));
+  assert.ok(textOf(restoreItem).includes('已归档'));
   const roadmapItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'roadmap')[0];
   assert.ok(textOf(roadmapItem).includes('路线图（即将上线）'));
   assert.equal(roadmapItem.props.disabled, true, '路线图占位不可点');
@@ -540,8 +563,92 @@ test('回到原会话：调用 openSession(parentId) 并关闭菜单', async () 
   assert.equal(findByAttr(renderer.tree, 'data-cr-relay-menu'), null, '点击后菜单应关闭');
 });
 
-test('查看交接单：只用 basename 走已有 handoffs API，并显示交接单内容', async () => {
+test('恢复旧会话：已归档 → 先 unarchive(parentId) 再 openSession，并更新本地归档状态', async () => {
   const harness = loadBundle();
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const restoreItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0];
+  assert.ok(restoreItem !== undefined, '已归档时应出现「恢复旧会话」入口');
+  assert.ok(textOf(restoreItem).includes('已归档'), `恢复项应说明当前已归档：${textOf(restoreItem)}`);
+  restoreItem.props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID], '应先走 ctx.uiWorkspace.unarchiveSession');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID], '恢复后应自动切回旧会话');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-menu'), null, '恢复成功后菜单关闭');
+  assert.equal(
+    findByAttr(renderer.tree, 'data-cr-relay-bar').props['data-cr-relay-parent-archived'],
+    'false',
+    '本地归档状态应更新，恢复入口随之消失',
+  );
+});
+
+test('未归档：不显示恢复入口，「回到原会话」直接 open', async () => {
+  const harness = loadBundle();
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: false });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const actions = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] !== undefined).map((node) => node.props['data-cr-relay-action']);
+  assert.deepEqual(actions, ['doc', 'parent', 'roadmap'], '未归档时不应出现恢复入口');
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'parent')[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, [], '未归档时不应调用 unarchive');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID]);
+});
+
+test('老宿主没有 unarchiveSession：恢复入口走 HTTP recover，再切换会话', async () => {
+  const harness = loadBundle({ withUnarchive: false });
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.actionCalls, [{ action: 'recover', sessionId: OLD_SESSION_ID }], '应走 dcr 自己的 recover 动作');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID], 'HTTP 恢复成功后仍应切回旧会话');
+});
+
+test('恢复失败：提示错误、菜单保持打开、不误切换', async () => {
+  const harness = loadBundle({ unarchiveError: true });
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID]);
+  assert.deepEqual(harness.openCalls, [], '恢复失败不能假装已恢复并切走');
+  const notice = findByAttr(renderer.tree, 'data-cr-relay-notice');
+  assert.ok(notice !== null, '应显示恢复失败提示');
+  assert.ok(textOf(notice).includes('恢复旧会话失败'), `提示应说明恢复失败：${textOf(notice)}`);
+  assert.ok(findByAttr(renderer.tree, 'data-cr-relay-menu') !== null, '失败后菜单保留，用户可重试');
+});
+
+test('已归档时点「回到原会话」也先恢复再打开（不让用户撞归档墙）', async () => {
+  const harness = loadBundle();
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'parent')[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID], '已归档时「回到原会话」应先恢复');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID]);
+});
+
+test('查看交接单：只用 basename 走已有 handoffs API，并显示交接单内容', async () => {  const harness = loadBundle();
   harness.setState({ ok: true, chain: CHAIN });
   harness.setDoc({ ok: true, name: 'handoff-2026-10-26T09-00-00-000Z.md', path: CHAIN.path, content: '# 交接单\n- 关键结论' });
   const renderer = harness.mount(SESSION_ID);

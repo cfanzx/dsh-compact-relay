@@ -2,7 +2,7 @@
 
 ## 0.5.0（未发布）
 
-> 0.5.0 第一批：地基 F1–F6 + **命名反转（第一个用户可见功能）**。接力条、双向跳转、自动归档旧会话尚未实现。未 commit、未发布。
+> 0.5.0 功能批次：地基 F1–F6 + **命名反转 + 接力条 + 交接后自动归档旧会话/恢复入口**。双向跳转的「父会话 → 子会话」入口与里程碑面板尚未实现。未 commit、未发布。
 
 ### F1+F2：历史前缀纯函数 + relay record 白名单（commit `5397863`）
 
@@ -35,10 +35,27 @@
 - **有意行为变化**：F2/F3 时期「父记录不写 scheme/titleSeq/historyTitle」的约束随本功能更新——父/子记录现在都写 `scheme` + `titleSeq`；F5 链不变量测试已改为断言新形状。
 - **测试**：新增 `test/handoff-naming.mjs`（第 1/2 次新链标题与序号、父/子 titleSeq 各取自己 rename、旧链 cutover 不改旧标题、0.3 旧记录不迁移、80 字节预算、幂等 guard、rename 失败降级含端到端不阻断）；更新 `test/handoff.mjs` 与 `test/relay-chain.mjs` 的父记录/标题期望；`test/harness/host.mjs` 支持 `sessionTitleText` 与函数式 `renameEventSeq`。
 
+### 交接后自动归档旧会话 + 恢复入口（未提交）
+
+- **宿主接缝（0.2.1-rc.3 app.asar 实测）**：
+  - 服务端 `@deepseek-ai/dsh-workspace/lib/index.js` 的 `WorkspaceRegistry.archiveSession(sessionId, { stopActivity })`；插件通过 `ctx.get('workspaceRegistry')` 调用（建子会话已在用同一服务）。
+  - 不带 `stopActivity` 时先跑 `workspace/session-activity` waterfall，任何 provider（运行中的 turn / subagent / job / schedule）报活都会在写盘前抛 `WorkspaceActiveSessionError`；带 `stopActivity: true` 会先写归档集合、再停旧会话的工作。**自动交接不传 stopActivity**——静默取消用户后台任务比多留一行破坏性大。
+  - `unarchiveSession(id)` 幂等且不做存在性探测；归档集合是 registry 全局状态，不改变 workspace 成员/排序，恢复后旧会话回到原位。
+  - 客户端 `ctx.uiWorkspace.unarchiveSession(id)` 与侧栏「取消归档」是同一接缝（`dsh-client-ui-workspace` 的 `UiWorkspaceService`）。
+- **`lib/dsh/handoff-archive.js`**：自动归档只传 `sessionId`；已归档 → `already` 幂等；旧会话有活 → 等 150ms 重试一次后降级 `active`，保留旧会话可见并只 warn；无 registry / 找不到会话 / 写盘失败分别降级 `unavailable` / `unknown` / `failed`；任何分支都不抛错。`handoffArchiveNoteOf` 统一生成用户文案（失败固定含「归档失败，不影响交接」）。
+- **`lib/actions/handoff.js`**：归档顺序在**子会话建好、旧会话改名、父 record flush**之后；成功 message 追加「旧会话已归档（可在新会话输入框上方「已接力自 …」→「恢复旧会话」找回；侧栏「全部会话」也能取消归档）」，失败追加原因且不影响 `ok/childId/path`。
+- **恢复入口**：
+  - 服务端 `lib/actions/recover.js` + HTTP `action: 'recover'`：直接调 `workspaceRegistry.unarchiveSession`，跳过 `resolveTarget`（归档会话通常没有活 agent），幂等并回报剩余归档集合。
+  - `readState` 新增 additive 字段 `parentArchived`（true/false；没有父会话或宿主不给归档状态为 null），`chain` 仍是 relay record 的纯投影。
+  - 客户端接力条下拉新增「恢复旧会话」：已归档或宿主未给状态时显示；优先 `ctx.uiWorkspace.unarchiveSession`，老宿主回退 HTTP recover；成功后更新本地归档状态并自动切回旧会话。「回到原会话」在已归档时也先恢复，避免用户撞「归档会话不可打开」。
+- **兼容/边界**：旧链（`handoff-n`）与 0.3/0.4 旧 record 同样归档，命名逻辑一个字符不改；宿主接缝缺失/失败一律降级为「不归档」并 warn；不改交接单正文、压缩行为、命名反转逻辑。
+- **测试**：新增 `test/archive.mjs` 16 组（归档参数/幂等/活跃重试/失败降级/旧链/恢复动作/HTTP 路由/产物静态断言）；`test/relay-bar.mjs` 新增 5 组恢复交互；`test/state-passive.mjs` 增 `parentArchived` 断言。`npm test` **257 PASS / 0 FAIL**。
+- **未真机验证**：本环境未启动真实 DSH 会话点验「交接 → 自动归档 → 接力条恢复」全链路；宿主证据来自 app.asar 源码与同形 fake ctx。真机需确认：①交接完成后侧栏旧会话消失、新会话自动打开；②「恢复旧会话」后旧会话回原位且可打开；③旧会话有后台任务时保留可见并提示任务族。
+
 ### 验证
 
-- `npm test` 全绿：**220 PASS / 0 FAIL**（历史基线：F1+F2 后 204 → F3 后 206 → F4 后 207 → F5 后 213；本次命名反转新增 7 组断言）。
-- 未 commit、未发布、未打 tag；0.5.0 剩余用户功能（接力条 / 双向跳转 / 自动归档）尚未实现。
+- `npm test` 全绿：**257 PASS / 0 FAIL**（历史基线：F1+F2 后 204 → F3 后 206 → F4 后 207 → F5 后 213 → 命名反转后 220 → 接力条后 236；本次自动归档 + 恢复入口新增 21）。
+- 未 commit、未发布、未打 tag；0.5.0 剩余：双向跳转的父会话→子会话入口、里程碑面板。
 
 ## 0.4.2（2026-10-26 · 交接线保命补丁）
 

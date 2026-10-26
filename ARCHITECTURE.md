@@ -23,13 +23,15 @@ lib/index.js          装配层：读配置 → 建共享依赖 → 注册入口
    │
 lib/adapters/         入口适配层：commands.js / http.js / tool.js / prompt.js（systemPrompt 动态提示）
    │                  只做协议转换（参数、命令结果、HTTP JSON、提示文本），不做判断。
-lib/actions/          动作层：state / better-compact / handoff / test-compact / lock /
-   │                  inflight（进行中登记，M6 取消）/ pin（M6 钉住）/ compress-hint（压缩判断）
+lib/actions/          动作层：state / better-compact / handoff / recover（0.5 恢复归档）/
+   │                  test-compact / lock / inflight（进行中登记，M6 取消）/ pin（M6 钉住）/
+   │                  compress-hint（压缩判断）
    │                  + 共享执行件：support（信号/inflight/取消收口）、compact-run（压缩执行流程）
    │                  + diagnostics（0.4 P0-2 诊断组装：取数并裁白名单，交给 dsh 层构造）
    │                  每个动作只写一次，被所有入口共用。
 lib/dsh/              能力封装层：pressure / session-view / summarizer / route / prefix /
    │                  stream / handoff-writer / compact-transaction / idle / sessions /
+   │                  handoff-archive（0.5 旧会话归档/恢复接缝）/
    │                  site-info（M6 现场快照）/ handoff-files（M6 交接文档只读）
    │                  + 共享件：compaction-pair（事件配对扫描）、model-task（模型调用装配/收尾）
    │                  + 诊断（0.4 P0-2）：diag-counters（进程内计数/耗时/错误码）/
@@ -114,6 +116,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/compact-transaction.js` | `replaceRangeWithSummary` | **唯一替换事务**：start → summary → replace → end |
 | `dsh/idle.js` | `runIdle` | `runMaintenance()` 封装 + busy/abort 映射 |
 | `dsh/sessions.js` | `createHandoffSession`, `handoffTitlePlanOf`, `childTitleOf`, `renameHistoryOf`, `presetIdOf`, `sourceTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入；**followup 后往子会话写 relay record**（ordinal/baseTitle/scheme/titleSeq，走 plugin record 通道）；链号优先读 record，旧会话才回退标题解析；`handoffTitlePlanOf` 决定本次链的 scheme（干净标题/历史 N → 新链 `history-n`；交接第 N 次/旧前缀/0.3 旧记录 → 旧链 `handoff-n`）；`renameHistoryOf` 在子会话建好后把旧会话改名「历史 N：<原名>」（幂等 guard + flush，失败只 warn） |
+| `dsh/handoff-archive.js` | `archiveHandoffSource`, `handoffArchiveNoteOf`, `isSessionArchived`, `workspaceRegistryOf` | 0.5.0 旧会话归档/恢复接缝：`ctx.get('workspaceRegistry')` → `archiveSession(id)`（**绝不传 stopActivity**）、`unarchiveSession(id)`、`archivedSessionIds`；活跃会话有限重试后降级 `active`，失败/缺接口一律不抛错；`handoffArchiveNoteOf` 统一用户文案 |
 | `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`：对 SSE 订阅者去抖推送 `readState`；0.3.4 起**无论有无订阅者都维护最新状态缓存**（`latestState(sessionId)` → `{ratio, window, compressHint}`），供 systemPrompt 同步读取 |
 | `dsh/site-info.js` | `buildSiteSnapshot`, `gitInfo`, `pendingJobs` | 交接单现场快照（启动时长、git、后台任务、模型），只读 |
 | `dsh/handoff-files.js` | `listHandoffFiles`, `countHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限）；`countHandoffFiles` 供列表 `total`（0.3.4 BUG-006） |
@@ -130,10 +133,11 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 
 | 文件 | 导出 | 职责 |
 |---|---|---|
-| `actions/state.js` | `readState`, `resolveTarget` | 指示灯/菜单/命令/文档元信息共用的状态快照（含单调 `revision`）；0.5.0 F4 起同时下发只读 `chain`（接力链投影）与旧字段 `relay` |
+| `actions/state.js` | `readState`, `resolveTarget` | 指示灯/菜单/命令/文档元信息共用的状态快照（含单调 `revision`）；0.5.0 F4 起同时下发只读 `chain`（接力链投影）与旧字段 `relay`；0.5.0 起再下发 `parentArchived`（旧会话是否在 registry 归档集合，true/false/null） |
 | `actions/better-compact.js` | `betterCompact`, `betterCompactLocked`, `previewBetterCompact`, `cancelBetterCompact` | 精压：锁 → 读压力 → 选段（避开锁定）→ idle 事务 → 结果 |
 | `actions/test-compact.js` | `testCompact` | `/bctest`：默认 dry-run，`confirm` 才真跑 |
-| `actions/handoff.js` | `handoff`, `previewHandoff` | 交接：预览（九段草稿+就绪清单）/ 执行（压缩→写盘→建会话→切换） |
+| `actions/handoff.js` | `handoff`, `previewHandoff` | 交接：预览（九段草稿+就绪清单）/ 执行（压缩→写盘→建会话→切换）；**成功后自动归档旧会话**（0.5.0，见 `dsh/handoff-archive`），归档失败不阻断 |
+| `actions/recover.js` | `recoverArchivedSession` | 0.5.0 恢复入口：调 `workspaceRegistry.unarchiveSession(id)`（幂等），供 HTTP `action:'recover'` 与老客户端兜底 |
 | `actions/handoff-docs.js` | `listDocs`, `readDoc` | 交接单列表/全文（HTTP 适配层调用） |
 | `actions/compact-diff.js` | `readCompactDiff` | 压缩历史（A6）：最近 N 次范围/摘要预览/容量/是否提交 |
 | `actions/settings.js` | `loadSettings`, `saveSettings`, `resetSettings` | 设置合并/校验/热替换；坏文件回落默认 + `settingsError` |

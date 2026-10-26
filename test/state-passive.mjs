@@ -37,14 +37,17 @@ const tokenMeter = {
 };
 
 /**
- * @param {{liveSession?:object, agent?:object}} input
+ * @param {{liveSession?:object, agent?:object, archivedSessionIds?:string[]}} input
  * @returns {object} readState deps
  */
-function depsOf({ liveSession, agent } = {}) {
+function depsOf({ liveSession, agent, archivedSessionIds } = {}) {
   return {
     ctx: {
       tokenMeter,
       llm,
+      // 0.5.0：父会话归档状态（readState.parentArchived）的数据源。
+      get: (name) =>
+        name === 'workspaceRegistry' && Array.isArray(archivedSessionIds) ? { archivedSessionIds } : undefined,
       agents: {
         get: (id) => (agent !== undefined && agent.id === id ? agent : undefined),
         list: () => (agent === undefined ? [] : [agent]),
@@ -281,6 +284,17 @@ function sessionWithRelay(id, data) {
   assert.equal(state.relay.path, path);
   // SSE 帧体积：chain 只多一小块（~100B 量级），不能把标题/日志正文搬进帧里。
   assert.equal(JSON.stringify(state.chain).length < 512, true, 'chain 投影不能撑大 SSE 帧');
+  // 0.5.0：父会话归档状态来自 workspaceRegistry.archivedSessionIds，独立于 chain。
+  assert.equal(state.parentArchived, null, '宿主没有归档服务 → parentArchived=null（不知道，不猜 false）');
+  const archivedState = await readState(depsOf({ liveSession: session, archivedSessionIds: ['parent-1'] }), {
+    sessionId: session.id,
+  });
+  assert.equal(archivedState.parentArchived, true, '父会话在归档集合 → parentArchived=true（接力条显示恢复入口）');
+  assert.deepEqual(archivedState.chain, state.chain, '归档状态不能污染 chain 的纯投影');
+  const unarchivedState = await readState(depsOf({ liveSession: session, archivedSessionIds: [] }), {
+    sessionId: session.id,
+  });
+  assert.equal(unarchivedState.parentArchived, false, '父会话不在归档集合 → false');
 }
 
 {
