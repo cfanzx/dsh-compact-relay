@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.5.0（未发布）
+## 0.5.0（2026-10-26）
 
-> 0.5.0 功能批次：地基 F1–F6 + **命名反转 + 接力条 + 交接后自动归档旧会话/恢复入口**。双向跳转的「父会话 → 子会话」入口与里程碑面板尚未实现。未 commit、未发布。
+> 0.5.0 功能批次：地基 F1–F6 + **命名反转 + 接力条 + 交接后自动归档旧会话/恢复入口**。双向跳转的「父会话 → 子会话」入口与里程碑面板尚未实现；其余已提交并发布（2026-10-26）。
 
 ### F1+F2：历史前缀纯函数 + relay record 白名单（commit `5397863`）
 
@@ -23,7 +23,7 @@
 - **`lib/actions/state.js`**：`readState` 新增 `chain`（没有记录为 `null`），旧字段 `relay` 原样保留（0.3 旧名 `parentSessionId`/`index` 仍可读）。纯 additive：老客户端忽略新字段；SSE 帧 +~110B。
 - **测试**：`test/state-passive.mjs` 增「新记录全字段 / 0.3 旧记录缺字段 null / 无记录 chain=null / 旧字段不变」四组断言。
 
-### 命名反转（第一个用户可见功能，未提交）
+### 命名反转（第一个用户可见功能，commit d340dff）
 
 - **行为**：新链交接后，旧会话改名「历史 N：<原名>」，新会话继承干净原名（不带序号）；第 2 次交接为「历史 2：X / 历史 1：X / X」，列表读起来是一条对话。旧链（已存在的「交接第 N 次：」链、0.3 旧 record、旧「交接：/接棒：」堆叠）继续旧命名，旧会话标题一个字符不改（链级 cutover，不迁移、不混用）。
 - **`lib/core/relay.js`**：新增 `MAX_TITLE_BYTES=80` 与 `truncateTitleUtf8`（与宿主 `session-title` 同口径的 UTF-8 安全截断）；`historyTitleOf(index, base, maxBytes?)` 支持预算——前缀先计入、超长只缩 base，不传时保持 0.4.3 纯函数行为。
@@ -35,7 +35,7 @@
 - **有意行为变化**：F2/F3 时期「父记录不写 scheme/titleSeq/historyTitle」的约束随本功能更新——父/子记录现在都写 `scheme` + `titleSeq`；F5 链不变量测试已改为断言新形状。
 - **测试**：新增 `test/handoff-naming.mjs`（第 1/2 次新链标题与序号、父/子 titleSeq 各取自己 rename、旧链 cutover 不改旧标题、0.3 旧记录不迁移、80 字节预算、幂等 guard、rename 失败降级含端到端不阻断）；更新 `test/handoff.mjs` 与 `test/relay-chain.mjs` 的父记录/标题期望；`test/harness/host.mjs` 支持 `sessionTitleText` 与函数式 `renameEventSeq`。
 
-### 交接后自动归档旧会话 + 恢复入口（未提交）
+### 交接后自动归档旧会话 + 恢复入口（commit 369a235）
 
 - **宿主接缝（0.2.1-rc.3 app.asar 实测）**：
   - 服务端 `@deepseek-ai/dsh-workspace/lib/index.js` 的 `WorkspaceRegistry.archiveSession(sessionId, { stopActivity })`；插件通过 `ctx.get('workspaceRegistry')` 调用（建子会话已在用同一服务）。
