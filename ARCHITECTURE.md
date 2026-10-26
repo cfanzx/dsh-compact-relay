@@ -91,7 +91,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `core/markdown-lite.js` | `parseMarkdownLite`, `parseInlineLite` | **0.3.4（BUG-005）交接单轻量 markdown 解析**：标题/段落/有序无序列表/粗体/行内代码/代码块/分隔线；输出结构化 blocks+segments，不生成 HTML（XSS 内容原样当文本）；client 片段 `16-markdown.js` 构建时内联同一源码 |
 | `core/placeholders.js` | `isPlaceholderLine`, `isPlaceholderText` | 识别 `(none)`/无/N/A 等占位，防空壳文档/摘要 |
 | `core/pins.js` | `PIN_RECORD_TYPE`, `latestPinnedSeqs`, `clipRangeByPins` | 锁定：plugin record 快照、按锁定裁剪精压范围 |
-| `core/relay.js` | `RELAY_RECORD_TYPE`, `latestRelayRecord` | 接力链记录（parent/child/index/path） |
+| `core/relay.js` | `RELAY_RECORD_TYPE`, `HISTORY_PREFIX`, `relayTitleOf`, `historyTitleOf`, `splitHandoffTitle` | **接力链命名/解析纯函数**：交接标题「交接第 N 次：<原名>」、历史标题「历史 N：<原名>」生成；`splitHandoffTitle` 解析出 `baseTitle` / `handedOff` / `scheme`（`handoff-n` / `history-n` / `legacy`），旧链字段名与文案不变 |
 | `core/colors.js` | `DEFAULT_BASE`, `paletteForScheme` | 颜色纯数学：HSL 明度派生 + WCAG 对比度 ≥3:1、归一化、旧结构兼容 |
 | `core/errors.js` | `actionError`, `errorText`, `toActionResult` | 错误 → 用户可读文案的唯一映射（含原因附带与截断） |
 | `core/object.js` | `isPlainObject` | **普通对象判定的唯一来源**（config 合并 / 设置文件信封 / actions 深合并共用；非 null、typeof object、非数组） |
@@ -113,7 +113,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/handoff-writer.js` | `generateHandoffDoc` | 让模型写九段交接单；结构校验失败重试一次 |
 | `dsh/compact-transaction.js` | `replaceRangeWithSummary` | **唯一替换事务**：start → summary → replace → end |
 | `dsh/idle.js` | `runIdle` | `runMaintenance()` 封装 + busy/abort 映射 |
-| `dsh/sessions.js` | `createHandoffSession`, `childTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入 |
+| `dsh/sessions.js` | `createHandoffSession`, `handoffTitlePlanOf`, `childTitleOf`, `presetIdOf`, `sourceTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入；**followup 后往子会话写 relay record**（0.5.0 F3：ordinal/baseTitle/scheme/titleSeq，走 plugin record 通道）；链号优先读 record，旧会话才回退标题解析 |
 | `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`：对 SSE 订阅者去抖推送 `readState`；0.3.4 起**无论有无订阅者都维护最新状态缓存**（`latestState(sessionId)` → `{ratio, window, compressHint}`），供 systemPrompt 同步读取 |
 | `dsh/site-info.js` | `buildSiteSnapshot`, `gitInfo`, `pendingJobs` | 交接单现场快照（启动时长、git、后台任务、模型），只读 |
 | `dsh/handoff-files.js` | `listHandoffFiles`, `countHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限）；`countHandoffFiles` 供列表 `total`（0.3.4 BUG-006） |
@@ -122,7 +122,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/compaction-pair.js` | `scanCompactionLog` | **压缩事件配对扫描唯一来源**：一次扫描日志返回 summaries / ends(compactionId→end.data) / replaceByCoveredSeq；`session-view.countSummaries` 与 `compaction-log` 共用 |
 | `dsh/model-task.js` | `prepareModelCall`, `cacheAlignedControls`, `callModelAttempt`, `modelAttemptResult` | **模型任务公共装配/收尾**：会话→路由→预算→推理档、cache 对齐参数（不继承 reasoningEffort）、单次 callStream+finishProblem、结果元信息；`summarizer` 与 `handoff-writer` 共用（各自保留校验/重试策略） |
 | `dsh/settings-file.js` | `readSettingsFile`, `writeSettingsFile` | 设置文件读写（`$DSH_HOME/compact-relay.json`，`{v:1,config}` 信封、原子写） |
-| `dsh/relay.js` | `readRelayRecord`, `writeRelayRecord` | 接力链读写接缝 |
+| `dsh/relay.js` | `normalizeRelayRecord`, `relayRecordOf`, `relayChainOf`, `writeRelayRecord` | **relay record 读/写/投影唯一实现**：白名单归一化（含 `scheme`/`titleSeq`/`historyTitle`，缺为 null）；`relayRecordOf` 取会话最近一条；`relayChainOf` 投影只读链节点（`ordinal`/`baseTitle`/`parentId`/`childId`/`scheme`，`path` 有才带）；写失败只返回 false，不阻断交接 |
 | `dsh/diag-counters.js` | `createDiagCounters`, `errorCodeOf`, `localIso` | **0.4 P0-2 进程内诊断计数**：压缩/交接成功失败、最近 20 个耗时样本的 p50/p95、按 `(code, phase)` 聚合的最近 20 条错误码（只收 code/phase/at/count，**不收 message**）、锁定次数；纯内存零 IO，重启清零 |
 | `dsh/diagnostics.js` | `buildDiagnostics`, `renderIssueUrl`, `assertNoLeak`, `DIAG_SCHEMA` | **0.4 P0-2 诊断包构造**：逐字段 allowlist + 正则脱敏（命中替换为 `[REDACTED]`，只记数量）+ 尺寸上限（JSON ≤64KB / errors ≤20 条 / 单条 ≤200 字符），输出 `dcr-diagnostics/v1` JSON 与同源 Markdown；issue URL 只预填短字段（<7500）；零 IO 零网络 |
 
@@ -130,7 +130,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 
 | 文件 | 导出 | 职责 |
 |---|---|---|
-| `actions/state.js` | `readState`, `resolveTarget` | 指示灯/菜单/命令/文档元信息共用的状态快照（含单调 `revision`） |
+| `actions/state.js` | `readState`, `resolveTarget` | 指示灯/菜单/命令/文档元信息共用的状态快照（含单调 `revision`）；0.5.0 F4 起同时下发只读 `chain`（接力链投影）与旧字段 `relay` |
 | `actions/better-compact.js` | `betterCompact`, `betterCompactLocked`, `previewBetterCompact`, `cancelBetterCompact` | 精压：锁 → 读压力 → 选段（避开锁定）→ idle 事务 → 结果 |
 | `actions/test-compact.js` | `testCompact` | `/bctest`：默认 dry-run，`confirm` 才真跑 |
 | `actions/handoff.js` | `handoff`, `previewHandoff` | 交接：预览（九段草稿+就绪清单）/ 执行（压缩→写盘→建会话→切换） |
@@ -164,6 +164,9 @@ readState(deps, {sessionId}) -> {
   summaries, advice,               // 'none' | 'compact' | 'handoff'
   compressHint, busy,              // compressHint: null | {ratio, at, seq}（模型判断点）
   native,                          // DSH 原生自动压缩：{autoEnabled, thresholdRatio}
+  relay, chain,                    // 接力链：relay = 最近一条 record 原样；chain = 只读投影
+                                   //   {ordinal, baseTitle, parentId, childId, scheme, path?}
+                                   //   没有记录 → 两者都是 null；记录没写的字段 → chain 里为 null
   thresholds, colors,              // 由 host 下发，客户端不自己算
 }
 
@@ -218,13 +221,16 @@ replaceRangeWithSummary(deps, {
 接棒 /handoff（M3）：
   adapters/commands --> actions/handoff
                           ├─ actions/better-compact.betterCompactLocked（先精压，best effort）
-                          ├─ dsh/handoff-writer（完整 surface + 六段指令 → 模型写文档）
+                          ├─ dsh/handoff-writer（完整 surface + 九段指令 → 模型写文档）
                           ├─ core/handoff-doc（元信息头 + 写盘）
                           └─ dsh/sessions.createHandoffSession
                                ├─ ctx.agents.create（会话+agent，同 cwd/preset/模型）
                                ├─ workspaceRegistry.attachSession（同工作区）
-                               ├─ sessionTitle.rename（接棒：<原标题>）
-                               └─ childAgent.followup（文档成为首条消息并起第一轮）
+                               ├─ sessionTitle.rename（交接第 N 次：<原标题>）
+                               ├─ childAgent.followup（文档成为首条消息并起第一轮）
+                               └─ relay record 双写（0.5.0 地基，详见 §8.8）
+                                    ├─ 父会话 ← actions/handoff 写（含 path/旧字段；形状不变）
+                                    └─ 子会话 ← createHandoffSession 写（ordinal/baseTitle/scheme/titleSeq）
   <- {childId, path, started, message}
   client: /handoff 命令卡（conversation.chat.commandview key=handoff）
           或指示灯菜单 HTTP 响应里的 childId
@@ -412,6 +418,47 @@ M3 按下面的「0.2 等价物」落地（全部在 `lib/dsh/sessions.js` 与 `
 Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注入文档，而是
 `childAgent.followup(交接文档消息)`：消息落盘 + 开第一轮，客户端切过去就能看到
 「交接文档（context 卡）+ 模型确认」，而不是一个空的 Hero。fallback 才是 `append`。
+
+---
+
+## 8.8 0.5.0 地基：relay record 双写与 `readState.chain`
+
+**为什么双写**：接力链的事实既要让「下一次从父会话交接」读到（父会话日志），也要让
+「子会话自己」知道「我是第几次、原名是什么」（子会话日志）。0.5.0 命名反转后，子会话
+标题继承干净原名（`历史 N` 在旧会话那边），标题里不再有「交接第 N 次」——链号必须自带。
+同一跳交接因此写两条 `plugin:compact-relay/relay`（都是 `ignorable`，不进模型上下文、
+不算 token、压缩碰不到）：
+
+| 写在哪 | 谁写 | 字段 | 用途 |
+|---|---|---|---|
+| **父会话**日志 | `actions/handoff.js`（`createHandoffSession` 之后） | `parentId`/`childId`/`ordinal`/`at`/`atIso` + 0.3 旧名 `parentSessionId`/`index` + `path`/`planId`/`title`/`baseTitle`；**不写** `scheme`/`titleSeq`/`historyTitle` | 父会话的下一次交接读它续号；带交接单路径 |
+| **子会话**日志 | `dsh/sessions.js` `createHandoffSession`（`followup` 后、`flush` 前） | `parentId`/`childId`/`ordinal`/`baseTitle`/`title`/`scheme='handoff-n'`/`titleSeq`/`at`/`atIso`；**不写** `path` | 子会话自带链号；0.5.0 标题不带序号后仍能算出「下次第 N+1 次」 |
+
+同一跳的两条记录，`ordinal`/`childId`/`baseTitle` 必须相同（`test/relay-chain.mjs` 锁住）。
+父记录形状刻意保持 0.3/0.4 现状：F2 只放行**读**新字段，不改现网写出内容；子会话多出的
+那条记录是 0.5.0 地基里唯一新增的写入。
+
+**读侧**（`dsh/relay.js`）：
+
+- `relayRecordOf(session)`：从日志尾部找**最近一条**合法 record（父/子记录都算）；交接时
+  用它算下一跳标题，坏记录跳过。
+- `normalizeRelayRecord(data)`：白名单 + 旧字段补齐（`parentId`↔`parentSessionId`、
+  `ordinal`↔`index`）；`scheme`/`titleSeq`/`historyTitle` 缺失或非法 → `null`（不猜）。
+- `relayChainOf(record)`：给 `readState` 的只读投影，**不是解析**——只取
+  `ordinal`/`baseTitle`/`parentId`/`childId`/`scheme`，`path` 有才带（没有就不出现这个键）；
+  不读标题、不补默认序号、不从其它字段反推 scheme。
+- `readState` 同时下发旧字段 `relay`（原样，含 0.3 旧名）与新字段 `chain`（投影）；
+  没有记录时两者都是 `null`。additive 变更，老客户端忽略 `chain` 即可。
+
+**兼容边界**：0.4 及更早的 record 没有 `scheme`/`baseTitle`/`path` → `chain` 对应字段为
+`null`，链号仍可从 `ordinal`/`index` 读出；子会话没有 record 的旧历史 → 下一次交接回退
+标题解析（「交接第 N 次：」仍按旧规则递增，旧标题一个字符不改）。
+
+**测试**：`test/relay-chain.mjs`（三跳链序号、双写形状、scheme 不混、旧链逐字节、
+`relayChainOf` 投影、`readState.chain` 与 `relay` 同源）+ `test/relay-title-scheme.mjs`
+（纯函数）+ `test/handoff.mjs`（子会话 record）+ `test/state-passive.mjs`（chain 下发）。
+
+---
 
 ## 9. 落地顺序（每步只动 1–2 个文件）
 

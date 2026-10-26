@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0（未发布）· 地基
+
+> 只登记 0.5.0 的地基（数据面 / 纯函数 / 测试）；用户可见功能（命名反转、接力条、双向跳转、自动归档旧会话）尚未实现，不在本条。地基不单独发版。
+
+### F1+F2：历史前缀纯函数 + relay record 白名单（commit `5397863`）
+
+- **F1（`lib/core/relay.js`）**：新增 `HISTORY_PREFIX='历史'`、`historyTitleOf(n, base)`（生成「历史 N：<原名>」，空格/全角冒号/序号写法与 `relayTitleOf` 同一套规则，原名先 trim，空题回落「会话」）；`splitHandoffTitle` 返回值新增 `scheme`——`handoff-n`（交接第 N 次）/ `history-n`（历史 N）/ `legacy`（旧「交接：」「接棒：」堆叠、无前缀、空/脏输入）。`baseTitle` / `handedOff` 的字段名与语义不变，旧标题解析结果逐字节不变。
+- **F2（`lib/dsh/relay.js`）**：`normalizeRelayRecord` 白名单放行可选 `scheme` / `titleSeq` / `historyTitle`；旧记录缺失/非法一律读成 `null`（不猜、不补默认值），其余字段与旧记录读取语义不变。父会话写出的 relay record 形状不变（不写这三个字段）。
+- **测试**：新增 `test/relay-title-scheme.mjs`（生成/解析/往返/scheme 不混用/空题与脏输入/>80 字节不截断）。
+
+### F3：子会话自带 relay record（commit `b4878b8`）
+
+- **`lib/dsh/sessions.js`**：`createHandoffSession` 在 `followup` 之后、`flush` 之前，向**子会话**写一条 `plugin:compact-relay/relay`：`parentId` / `childId` / `ordinal` / `baseTitle` / `title` / `scheme='handoff-n'` / `titleSeq` / `at` / `atIso`。走 plugin record 通道（`ignorable`，不进模型上下文、不算 token、压缩碰不到）。
+- **为什么**：0.5.0 把旧会话改名「历史 N：<原名>」、新会话继承原名后，子会话标题里不再有「交接第 N 次」；链号若仍靠标题解析会算成 0，第 2 次交接会重复「第 1 次」。record 让链号自带。
+- **父记录不动**：父会话的 relay record 仍由 `actions/handoff.js` 写 0.3/0.4 的现场形状（canonical + 旧字段 + `path`/`title`/`baseTitle`），不写 F2 新字段；本次只在子会话多一条记录，标题/文档/交接流程不变。
+- **测试**：`test/handoff.mjs` 增子会话 record 字段、`titleSeq`、两跳链式（第 1 次 → 第 2 次不重号）断言。
+
+### F4：`readState` 增只读 `chain` 投影（commit `cc6f86d`）
+
+- **`lib/dsh/relay.js`**：新增 `relayChainOf(record)`，把最近一条 relay record 投影成 `{ordinal, baseTitle, parentId, childId, scheme, path?}`——字段全部取自记录本身，不解析标题、不补默认序号；记录里没有的字段给 `null`，没有 `path` 就不出现这个键；不是对象返回 `null`。
+- **`lib/actions/state.js`**：`readState` 新增 `chain`（没有记录为 `null`），旧字段 `relay` 原样保留（0.3 旧名 `parentSessionId`/`index` 仍可读）。纯 additive：老客户端忽略新字段；SSE 帧 +~110B。
+- **测试**：`test/state-passive.mjs` 增「新记录全字段 / 0.3 旧记录缺字段 null / 无记录 chain=null / 旧字段不变」四组断言。
+
+### 验证
+
+- `npm test` 全绿：**213 PASS / 0 FAIL**（历史基线：F1+F2 后 204 → F3 后 206 → F4 后 207；F5 链不变量测试 `test/relay-chain.mjs` 并入后 213）。
+- 未发布、未打 tag；0.5.0 用户功能（命名反转 / 接力条 / 双向跳转 / 自动归档）尚未实现。
+
 ## 0.4.2（2026-10-26 · 交接线保命补丁）
 
 ### 修复：交接提醒可能晚于 DSH 原生压缩（0.4.1 的三个洞）
