@@ -432,7 +432,7 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 | 写在哪 | 谁写 | 字段 | 用途 |
 |---|---|---|---|
 | **父会话**日志 | `actions/handoff.js`（子会话建好、旧会话改名之后） | `parentId`/`childId`/`ordinal`/`at`/`atIso` + 0.3 旧名 `parentSessionId`/`index` + `path`/`planId`/`title`/`baseTitle` + `scheme`/`titleSeq`；新链再带 `historyTitle` | 父会话的下一次交接读它续号；带交接单路径；`titleSeq` 是旧会话 rename 的 eventSeq，`historyTitle` 是旧会话改名后的「历史 N」 |
-| **子会话**日志 | `dsh/sessions.js` `createHandoffSession`（`followup` 后、`flush` 前） | `parentId`/`childId`/`ordinal`/`baseTitle`/`title`/`scheme`（本次链的 `history-n`/`handoff-n`）/`titleSeq`（子会话 rename 的 eventSeq）/`at`/`atIso`；**不写** `path` | 子会话自带链号；新标题不带序号后仍能算出「下次第 N+1 次」 |
+| **子会话**日志 | `dsh/sessions.js` `createHandoffSession`（`followup` 后、`flush` 前） | `parentId`/`childId`/`ordinal`/`baseTitle`/`title`/`scheme`（本次链的 `history-n`/`handoff-n`）/`titleSeq`（子会话 rename 的 eventSeq）/`at`/`atIso`/`path`（交接单文件；0.5.0 起子记录也写，接力条在子会话可直接打开交接单） | 子会话自带链号；新标题不带序号后仍能算出「下次第 N+1 次」 |
 
 同一跳的两条记录，`ordinal`/`childId`/`baseTitle`/`scheme` 必须相同（`test/relay-chain.mjs` 锁住）。
 0.5.0 命名反转**有意改变**了父记录写出形状：F2/F3 当时的「父记录不写 scheme/titleSeq」是

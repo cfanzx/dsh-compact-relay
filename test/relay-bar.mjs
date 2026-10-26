@@ -428,6 +428,7 @@ test('新链：一行「已接力自 历史 1：原名 ▾」，fixed 向上弹�
   assert.equal(roadmapItem.props.onClick(), undefined);
 });
 
+// 老数据兼容：0.5.0 之前的子记录没有 path（当时 F3 不写），这时才向父会话回查。
 test('子记录无 path：向父会话读回同一条链的 path 后，查看交接单可用', async () => {
   const harness = loadBundle();
   const { path, ...localNoPath } = CHAIN;
@@ -448,6 +449,30 @@ test('子记录无 path：向父会话读回同一条链的 path 后，查看交
   await renderer.settle();
   const docItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'doc')[0];
   assert.equal(docItem.props.disabled, false, '补回 path 后查看交接单应可点');
+  assert.ok(!textOf(docItem).includes('暂无交接单'));
+});
+
+test('子记录自带 path：直接用本会话的 path，不再回查父会话', async () => {
+  const harness = loadBundle();
+  harness.setState({ ok: true, chain: CHAIN, sessionId: SESSION_ID });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+
+  const bar = findByAttr(renderer.tree, 'data-cr-relay-bar');
+  assert.equal(bar.props['data-cr-relay-path'], CHAIN.path, '子记录自带的 path 应直接可用');
+  const stateCalls = harness.fetches.filter((entry) => String(entry.url).startsWith('/api/compact-relay-state'));
+  assert.equal(stateCalls.length, 1, '自带 path 时只读本会话，不再向父会话回查');
+  assert.equal(
+    harness.fetches.some((entry) => String(entry.url).includes(OLD_SESSION_ID)),
+    false,
+    '父会话未加载/已归档也不影响（根本没请求它）',
+  );
+
+  bar.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const docItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'doc')[0];
+  assert.equal(docItem.props.disabled, false, '自带 path 时查看交接单直接可点');
   assert.ok(!textOf(docItem).includes('暂无交接单'));
 });
 

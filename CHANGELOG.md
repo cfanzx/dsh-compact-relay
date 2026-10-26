@@ -14,7 +14,7 @@
 
 - **`lib/dsh/sessions.js`**：`createHandoffSession` 在 `followup` 之后、`flush` 之前，向**子会话**写一条 `plugin:compact-relay/relay`：`parentId` / `childId` / `ordinal` / `baseTitle` / `title` / `scheme='handoff-n'` / `titleSeq` / `at` / `atIso`。走 plugin record 通道（`ignorable`，不进模型上下文、不算 token、压缩碰不到）。
 - **为什么**：0.5.0 把旧会话改名「历史 N：<原名>」、新会话继承原名后，子会话标题里不再有「交接第 N 次」；链号若仍靠标题解析会算成 0，第 2 次交接会重复「第 1 次」。record 让链号自带。
-- **父记录不动**：父会话的 relay record 仍由 `actions/handoff.js` 写 0.3/0.4 的现场形状（canonical + 旧字段 + `path`/`title`/`baseTitle`），不写 F2 新字段；本次只在子会话多一条记录，标题/文档/交接流程不变。
+- **父记录不动**：父会话的 relay record 仍由 `actions/handoff.js` 写 0.3/0.4 的现场形状（canonical + 旧字段 + `path`/`title`/`baseTitle`），0.5.0 起父/子记录都带 `path`（交接单路径）；本次只在子会话多一条记录，标题/文档/交接流程不变。
 - **测试**：`test/handoff.mjs` 增子会话 record 字段、`titleSeq`、两跳链式（第 1 次 → 第 2 次不重号）断言。
 
 ### F4：`readState` 增只读 `chain` 投影（commit `cc6f86d`）

@@ -7,7 +7,7 @@
  * 一条接力链之后的不变量：
  *
  *   1) 三跳接力：第 1/2/3 次序号 1→2→3，标题干净（原题无前缀）也不重号；
- *   2) record 形状：父/子都写 scheme+titleSeq，新链父记录另带 historyTitle；
+ *   2) record 形状：父/子都写 scheme+titleSeq+path（同一个交接单路径），新链父记录另带 historyTitle；
  *   3) scheme 不混用：交接第 N 次 / 历史 N / legacy 各归各的，history 标题可往返；
  *   4) 旧链兼容：交接第 N 次解析逐字节不变（固定期望，不随实现漂）；
  *   5) 投影：relayChainOf 只取记录字段，缺的给 null、没 path 就不出现这个键；
@@ -222,7 +222,7 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3；新链继承原
   assert.equal(typeof childRecord.atIso, 'string');
   assert.equal(childRecord.titleSeq, null, 'rename 不返回 eventSeq 时写 null（不猜）');
   assert.equal('historyTitle' in childRecord, false, '子会话标题是原名，不写 historyTitle');
-  assert.equal('path' in childRecord, false, '子记录不重复父记录的交接单路径');
+  assert.equal(childRecord.path, firstHop.result.path, '子记录自带交接单路径（接力条不用回查父会话）');
 
   // 读回：白名单补齐 0.3 旧名（只读别名，不改写盘形状）。
   // 注意用「自己的那条」原始 data 归一化，不用 relayRecordOf(child) —— 终态里
@@ -234,7 +234,7 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3；新链继承原
   assert.equal(childRead.scheme, 'history-n');
   assert.equal(childRead.titleSeq, null);
   assert.equal(childRead.historyTitle, null, '子记录缺失字段读成 null');
-  assert.equal(Object.hasOwn(childRead, 'path'), false);
+  assert.equal(childRead.path, firstHop.result.path, 'normalize 放行并读回子记录的 path');
   // 终态对照：最新记录 ≠ 自己的记录 —— 所以「自己的链号」必须按 childId 认，不能只看最后一条。
   assert.equal(relayRecordOf(firstHop.child).ordinal, 2, 'child1 交接出下一代后，最新记录是第 2 跳的父记录');
   assert.equal(ownRecordsOf(firstHop.child)[0].data.ordinal, 1, '自己的 record 仍是 1');
@@ -256,13 +256,14 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3；新链继承原
   assert.equal(parentRecord.titleSeq, null, '父记录 titleSeq 取旧会话 rename 的 eventSeq（替身不返回→null）');
   assert.equal(parentRecord.historyTitle, `历史 1：${CLEAN_TITLE}`, '父记录额外记下旧会话改名后的标题');
 
-  // 双写一致：同一次交接在父、子两侧写的链号/原题/子 id 必须相同。
+  // 双写一致：同一次交接在父、子两侧写的链号/原题/子 id/交接单路径必须相同。
   assert.equal(parentRecord.ordinal, childRecord.ordinal, '父/子记录 ordinal 相同');
   assert.equal(parentRecord.childId, childRecord.childId, '父/子记录 childId 相同');
   assert.equal(parentRecord.baseTitle, childRecord.baseTitle, '父/子记录 baseTitle 相同');
+  assert.equal(parentRecord.path, childRecord.path, '父/子记录 path 相同（同一份交接单）');
 }
 
-console.log('PASS  0.5.0 F5 record：父/子记录同 scheme+titleSeq；新链父记录带 historyTitle、子记录不带 path');
+console.log('PASS  0.5.0 F5 record：父/子记录同 scheme+titleSeq+path；新链父记录带 historyTitle');
 
 /* ================================================================== *
  * 3) scheme 不混用：handoff-n / history-n / legacy + history 标题往返
@@ -445,7 +446,7 @@ console.log('PASS  0.5.0 F5 旧链：交接第 N 次解析逐字节不变；无 
   );
 }
 
-// 5.2 真实 F3 子记录（没有 path）→ 不带 path 键；scheme 原样。
+// 5.2 真实 F3 子记录（0.5.0 起自带 path）→ 投影带上 path；scheme 原样。
 {
   const chain = relayChainOf(normalizeRelayRecord(ownRecordsOf(firstHop.child)[0].data));
   assert.deepEqual(
@@ -456,10 +457,14 @@ console.log('PASS  0.5.0 F5 旧链：交接第 N 次解析逐字节不变；无 
       parentId: source.id,
       childId: firstHop.child.id,
       scheme: 'history-n',
+      path: firstHop.result.path,
     },
-    'F3 子记录没有 path 就不出现这个键',
+    '子记录自带 path，投影直接带上（接力条不再需要回查父会话）',
   );
-  assert.equal(Object.hasOwn(chain, 'path'), false);
+  assert.deepEqual(
+    Object.keys(chain),
+    ['ordinal', 'baseTitle', 'parentId', 'childId', 'scheme', 'path'],
+  );
 }
 
 // 5.3 父记录（0.5.0 也写 scheme + historyTitle）→ path 带上；投影不暴露 historyTitle。
@@ -537,7 +542,8 @@ function agentOf(session) {
 }
 
 {
-  // 最后一跳的子会话：日志里只有自己的 F3 record（ordinal=3、无 path）。
+  // 最后一跳的子会话：日志里只有自己的 F3 record（ordinal=3、带 path）。
+  // readState 直接把它投影出去 —— 子会话拿到 chain.path，「查看交接单」不需要父会话在场。
   const childState = await readState(stateDeps(), { agent: agentOf(thirdHop.child) });
   assert.deepEqual(childState.chain, relayChainOf(childState.relay), 'chain 必须是 relay 的只读投影');
   assert.deepEqual(childState.chain, {
@@ -546,13 +552,15 @@ function agentOf(session) {
     parentId: thirdHop.parent.id,
     childId: thirdHop.child.id,
     scheme: 'history-n',
+    path: thirdHop.result.path,
   });
-  assert.equal(Object.hasOwn(childState.chain, 'path'), false, '子会话链没有 path 键');
+  assert.equal(childState.chain.path, thirdHop.result.path, '子会话链自带交接单路径');
   // 旧字段原样：子记录没写 0.3 旧名，读侧仍补齐（老客户端还能读）。
   assert.equal(childState.relay.ordinal, 3);
   assert.equal(childState.relay.index, 3);
   assert.equal(childState.relay.parentSessionId, thirdHop.parent.id);
   assert.equal(childState.relay.childId, thirdHop.child.id);
+  assert.equal(childState.relay.path, thirdHop.result.path);
 
   // 源会话：日志里是父记录（ordinal=1、有 path、scheme=history-n），投影照记录给。
   const sourceState = await readState(stateDeps(), { agent: agentOf(source) });
@@ -563,4 +571,4 @@ function agentOf(session) {
   assert.equal(sourceState.relay.parentId, source.id);
 }
 
-console.log('PASS  0.5.0 F5 readState：chain 与 relay 同源下发（子记录带链号、父记录带 path+scheme、旧字段不变）');
+console.log('PASS  0.5.0 F5 readState：chain 与 relay 同源下发（父/子记录都带 path、子记录带链号、旧字段不变）');

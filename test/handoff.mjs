@@ -289,6 +289,7 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(typeof childRelay.atIso, 'string', '时间字段与父记录同格式');
   assert.equal(childRelay.titleSeq, null, '默认替身 rename 不返回 eventSeq → null（取不到不猜）');
   assert.equal('historyTitle' in childRelay, false, '子会话自己的标题是原名，不写 historyTitle');
+  assert.equal(childRelay.path, result.path, '子记录带交接单路径，与父记录同一份');
   // 标准读取器能读回新字段；链号从子会话记录推进（这里标题是干净的原题，解析必得 0）。
   const childRead = relayRecordOf(record.child);
   assert.equal(childRead.ordinal, 1);
@@ -296,6 +297,7 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(childRead.parentSessionId, 'source-session');
   assert.equal(childRead.scheme, 'history-n');
   assert.equal(childRead.titleSeq, null);
+  assert.equal(childRead.path, result.path, 'normalize 放行子记录的 path');
   const nextPlan = handoffTitlePlanOf(ctx, record.child);
   assert.equal(nextPlan.viaRecord, true, '下一次交接必须走 record，不回退标题解析');
   assert.equal(nextPlan.index, 2, '0.5.0 子会话标题变干净后，链号仍靠 record 递增（不重复 1）');
@@ -468,6 +470,28 @@ test('0.4.4 F3：rename 快照的 eventSeq → 子会话记录 titleSeq；0/缺�
     assert.equal(relays[0].data.titleSeq, null, 'eventSeq=0 不在 relay 白名单（正整数）内 → null，不写非法值');
     assert.equal(relayRecordOf(record.child).titleSeq, null);
     assert.equal(relayRecordOf(record.child).ordinal, 1, 'titleSeq 缺失不影响链号');
+  }
+});
+
+test('0.5.0 F3：子会话 relay 带交接单 path；调用方没给就不写这个键（不猜）', async () => {
+  {
+    const session = baseSourceSession();
+    const { ctx, engine, record } = makeCtx();
+    const file = path.join(createTmpDir('relay-f3-path-'), 'handoff-1.md');
+    await createHandoffSession({ ctx, engine, session, doc: 'doc', title: '原会话标题', path: file });
+    const relays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
+    assert.equal(relays.length, 1);
+    assert.equal(relays[0].data.path, file, 'path 原样写进子记录');
+    assert.equal(relayRecordOf(record.child).path, file, 'normalize 读回子记录的 path');
+  }
+  {
+    const session = baseSourceSession();
+    const { ctx, engine, record } = makeCtx();
+    await createHandoffSession({ ctx, engine, session, doc: 'doc', title: '原会话标题' });
+    const relays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
+    assert.equal(relays.length, 1);
+    assert.equal('path' in relays[0].data, false, '拿不到路径就不写这个键（不写空串/null 占位）');
+    assert.equal(Object.hasOwn(relayRecordOf(record.child), 'path'), false);
   }
 });
 
