@@ -13,7 +13,9 @@
  *   4. 交互与定位：点这一行→ fixed + 向上弹的菜单（bottom 定位、z-index 顶层），
  *      回到原会话调用注入的 openSession(parentId)，已归档/未知时先走
  *      ctx.uiWorkspace.unarchiveSession（老宿主退回 HTTP recover），交接单走
- *      `/api/compact-relay-handoffs?file=<basename>`（不是全路径）。
+ *      `/api/compact-relay-handoffs?file=<basename>`（不是全路径）；
+ *   5. 0.5.1 批 3：完整交接链列表（按需展开、每层一次 state GET、8 跳上限、
+ *      sessionId 去重、失败重试、行内交接单/跳转）与父→子「去新会话」入口。
  *
  * 不引 jsdom / React：用极简 React 替身把真实 bundle 的组件跑起来（与
  * test/settings-ux.mjs 同一套思路），业务代码原样执行。
@@ -156,17 +158,34 @@ function jsonResponse(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }
 
-function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
+function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFailTimes = 0, recoverFails = false, recoverFailTimes = 0 } = {}) {
   const react = createReactFacade();
   const registered = {};
   const exported = {};
   const fetches = [];
   const listeners = {};
   const stateResponses = new Map();
+  // 0.5.1 批 3：某个祖先会话的 state 读不到（测「完整交接链」的失败/重试分支）。
+  const stateFailures = new Set();
+  // 0.5.1 DCR-05：服务端整链端点。默认 404 = 老插件，让旧用例走逐级 state 读法。
+  const chainResponses = new Map();
+  let chainResponse = { status: 404, payload: { ok: false, message: 'not found' } };
   const actionCalls = [];
   const unarchiveCalls = [];
   let stateResponse = { ok: true, chain: null };
   let docResponse = { ok: true, name: 'handoff-x.md', path: '/tmp/handoffs/handoff-x.md', content: '# 交接单\n- 条目' };
+  // 0.5.1 批 2：交接预览响应（九段草稿 + 就绪 + 可编辑两段）。
+  const previewResponse = {
+    ok: true,
+    draft: '## 1. 目标\n- 完成批 2\n## 2. 证据\n- npm test',
+    readiness: { ok: true, missing: [], warnings: [] },
+    editable: { titles: ['约束', '下一步'], sections: { 约束: '不要动 0.6 目录', 下一步: '补真机验证' }, maxChars: 4000, note: '程序生成的段不可改。' },
+    ordinal: 1,
+    pressure: 400,
+    summaries: 0,
+    changedFiles: [],
+    attempts: 1,
+  };
 
   const sandbox = {
     console,
@@ -209,16 +228,37 @@ function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
   sandbox.window = sandbox;
   sandbox.fetch = (url, options) => {
     fetches.push({ url, options });
+    if (typeof url === 'string' && url.startsWith('/api/compact-relay-chain')) {
+      const sessionId = decodeURIComponent((url.split('sessionId=')[1] ?? ''));
+      const response = chainResponses.has(sessionId) ? chainResponses.get(sessionId) : chainResponse;
+      const resolved = typeof response === 'function' ? response() : response;
+      return Promise.resolve(jsonResponse(resolved.status ?? 200, resolved.payload ?? resolved));
+    }
     if (typeof url === 'string' && url.startsWith('/api/compact-relay-state')) {
       const sessionId = decodeURIComponent((url.split('sessionId=')[1] ?? ''));
+      if (stateFailures.has(sessionId)) return Promise.resolve(jsonResponse(500, { ok: false, message: 'state 读取失败' }));
       const response = stateResponses.has(sessionId) ? stateResponses.get(sessionId) : stateResponse;
       // 允许用函数给出「第 N 次请求」的响应（测会话尚未加载时的重试）。
       return Promise.resolve(jsonResponse(200, typeof response === 'function' ? response() : response));
     }
     if (typeof url === 'string' && url.startsWith('/api/compact-relay-handoffs?file=')) return Promise.resolve(jsonResponse(200, docResponse));
     if (url === '/api/compact-relay-action' && options?.method === 'POST') {
-      actionCalls.push(JSON.parse(options.body));
-      return Promise.resolve(jsonResponse(200, { ok: true, recovered: true, message: '已恢复旧会话' }));
+      const body = JSON.parse(options.body);
+      actionCalls.push(body);
+      // 0.5.1 批 2：指示灯交接预览 / 确认交接（归档开关 + 置顶确认）。
+      if (body.action === 'handoff-preview') return Promise.resolve(jsonResponse(200, previewResponse));
+      if (body.action === 'handoff') {
+        return Promise.resolve(
+          jsonResponse(200, { ok: true, message: '交接完成', childId: 'child-session-1', path: '/tmp/handoffs/handoff-x.md' }),
+        );
+      }
+      // recoverFails / recoverFailTimes：插件 HTTP recover 通道失败（测双通道重试）。
+      const failing = recoverFails || actionCalls.length <= recoverFailTimes;
+      return Promise.resolve(
+        failing
+          ? jsonResponse(500, { ok: false, message: '恢复接口不可用' })
+          : jsonResponse(200, { ok: true, recovered: true, message: '已恢复旧会话' }),
+      );
     }
     return Promise.reject(new Error(`未预期的请求：${url}`));
   };
@@ -243,7 +283,8 @@ function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
         return () => {};
       },
     },
-    sessions: { list: { getSnapshot: () => ({ byId: {} }) }, refresh() {} },
+    // child-session-1 预先登记：交接确认后 waitAndOpen 不用等 30×400ms 的目录轮询。
+    sessions: { list: { getSnapshot: () => ({ byId: { 'child-session-1': { id: 'child-session-1' } } }) }, refresh() {} },
     uiWorkspace: {
       openSession(sessionId) {
         openCalls.push(sessionId);
@@ -252,7 +293,8 @@ function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
         ? {
             async unarchiveSession(sessionId) {
               unarchiveCalls.push(sessionId);
-              if (unarchiveError) throw new Error('unarchive rejected by host');
+              // unarchiveFailTimes=N：前 N 次失败（测「恢复失败重试 unarchive+open」）。
+              if (unarchiveError || unarchiveCalls.length <= unarchiveFailTimes) throw new Error('unarchive rejected by host');
             },
           }
         : {}),
@@ -264,8 +306,37 @@ function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
     if (typeof forSessionId === 'string') stateResponses.set(forSessionId, response);
     else stateResponse = response;
   }
+  /** 0.5.1 批 3：让某个会话的 state 请求失败（500）；healState 恢复正常。 */
+  function failState(forSessionId) {
+    stateFailures.add(forSessionId);
+  }
+  function healState(forSessionId) {
+    stateFailures.delete(forSessionId);
+  }
   function setDoc(response) {
     docResponse = response;
+  }
+  /**
+   * 0.5.1 DCR-05：设置 `/api/compact-relay-chain` 的响应。
+   * 传 `{status, payload}` 可模拟老宿主（404）；直接传 payload 默认 200。
+   */
+  function setChainResponse(response, forSessionId) {
+    const normalized =
+      response !== null && typeof response === 'object' && typeof response.status === 'number'
+        ? response
+        : { status: 200, payload: response };
+    if (typeof forSessionId === 'string') chainResponses.set(forSessionId, normalized);
+    else chainResponse = normalized;
+  }
+  function mountLeft(sessionId) {
+    const entry = registered['conversation.input.left'];
+    assert.ok(entry !== undefined, '应注册 conversation.input.left（指示灯）');
+    assert.equal(entry.meta.id, 'compact-relay');
+    const props = entry.meta.inject(sessionId);
+    assert.equal(props.sessionId, sessionId, '指示灯 props 应透传 sessionId');
+    const renderer = mountComponent(entry.component, react, props);
+    renderer.renderOnce();
+    return renderer;
   }
   function mount(sessionId) {
     const entry = registered['conversation.input.dock'];
@@ -280,7 +351,7 @@ function loadBundle({ withUnarchive = true, unarchiveError = false } = {}) {
   function fire(type, event) {
     for (const handler of listeners[type] ?? []) handler(event);
   }
-  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, mount, fire };
+  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, failState, healState, mount, mountLeft, fire };
 }
 
 const SESSION_ID = 'session-new-0001';
@@ -317,8 +388,21 @@ test('客户端产物：input.dock 注册 + 接力条标记 + 主题 token 都�
     "'data-cr-relay-parent-archived'",
     "action: 'recover'",
     'ctx.uiWorkspace?.unarchiveSession',
+    "RELAY_CHAIN_ENDPOINT = '/api/compact-relay-chain'",
+    "'data-cr-relay-chain-open-parent'",
+    '上一层会话未打开',
+    '打开并继续',
     '路线图（即将上线）',
     '暂无交接单',
+    // 0.5.1 批 3：完整交接链 + 父→子入口
+    '完整交接链',
+    '去新会话',
+    '无法读取更早的链路',
+    "'data-cr-relay-chain-row'",
+    "'data-cr-relay-chain-open'",
+    "'data-cr-relay-chain-doc'",
+    "'data-cr-relay-chain-retry'",
+    "'data-cr-relay-next'",
   ]) {
     assert.ok(bundle.includes(marker), `bundle 应包含 ${marker}`);
   }
@@ -439,9 +523,9 @@ test('新链：一行「已接力自 历史 1：原名 ▾」，fixed 向上弹�
   assert.equal(menu.props.style.top, undefined, '向上弹时不应同时写 top');
   assert.equal(findByAttr(renderer.tree, 'data-cr-relay-bar').props['aria-expanded'], true);
 
-  // 四个入口，顺序与文案固定（父会话已归档 → 多一个「恢复旧会话」）。
+  // 入口顺序与文案固定（父会话已归档 → 多一个「恢复旧会话」；有祖先 → 多「完整交接链」）。
   const actions = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] !== undefined).map((node) => node.props['data-cr-relay-action']);
-  assert.deepEqual(actions, ['doc', 'parent', 'unarchive', 'roadmap']);
+  assert.deepEqual(actions, ['doc', 'parent', 'unarchive', 'chain', 'roadmap']);
   const restoreItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0];
   assert.ok(textOf(restoreItem).includes('恢复旧会话'));
   assert.ok(textOf(restoreItem).includes('已归档'));
@@ -595,7 +679,7 @@ test('未归档：不显示恢复入口，「回到原会话」直接 open', asy
   findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
   await renderer.settle();
   const actions = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] !== undefined).map((node) => node.props['data-cr-relay-action']);
-  assert.deepEqual(actions, ['doc', 'parent', 'roadmap'], '未归档时不应出现恢复入口');
+  assert.deepEqual(actions, ['doc', 'parent', 'chain', 'roadmap'], '未归档时不应出现恢复入口');
   findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'parent')[0].props.onClick();
   await renderer.settle();
   assert.deepEqual(harness.unarchiveCalls, [], '未归档时不应调用 unarchive');
@@ -616,8 +700,8 @@ test('老宿主没有 unarchiveSession：恢复入口走 HTTP recover，再切�
   assert.deepEqual(harness.openCalls, [OLD_SESSION_ID], 'HTTP 恢复成功后仍应切回旧会话');
 });
 
-test('恢复失败：提示错误、菜单保持打开、不误切换', async () => {
-  const harness = loadBundle({ unarchiveError: true });
+test('恢复失败（宿主 API 与 HTTP recover 都失败）：提示错误、菜单保持打开、不误切换', async () => {
+  const harness = loadBundle({ unarchiveError: true, recoverFails: true });
   harness.setState({ ok: true, chain: CHAIN, parentArchived: true });
   const renderer = harness.mount(SESSION_ID);
   renderer.renderOnce();
@@ -626,7 +710,8 @@ test('恢复失败：提示错误、菜单保持打开、不误切换', async ()
   await renderer.settle();
   findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0].props.onClick();
   await renderer.settle();
-  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID]);
+  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID], '先走宿主 API');
+  assert.deepEqual(harness.actionCalls, [{ action: 'recover', sessionId: OLD_SESSION_ID }], '失败后换 HTTP recover 重试一次');
   assert.deepEqual(harness.openCalls, [], '恢复失败不能假装已恢复并切走');
   const notice = findByAttr(renderer.tree, 'data-cr-relay-notice');
   assert.ok(notice !== null, '应显示恢复失败提示');
@@ -687,7 +772,818 @@ test('Esc / 点外面关闭菜单', async () => {
 });
 
 /* ------------------------------------------------------------------ *
- * 7. 执行
+ * 6.5 DCR-03 / DCR-01 客户端：菜单打开刷 state、未知归档也先恢复、失败重试、
+ *     没有恢复能力时隐藏入口、父会话出站记录（next）补 path
+ * ------------------------------------------------------------------ */
+
+const stateFetchCount = (harness) =>
+  harness.fetches.filter((entry) => String(entry.url).startsWith('/api/compact-relay-state')).length;
+
+const actionKeys = (tree) =>
+  findAll(tree, (node) => node.props?.['data-cr-relay-action'] !== undefined).map((node) => node.props['data-cr-relay-action']);
+
+test('菜单打开时刷新 state：别处归档的变化会出现在菜单里', async () => {
+  const harness = loadBundle();
+  // 打开前：宿主报告未归档（没有恢复入口）。
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: false, capabilities: { unarchive: true } });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  assert.equal(stateFetchCount(harness), 1);
+
+  // 侧栏/另一个窗口把父会话归档了：readState 已变，但组件还拿着旧状态。
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true, capabilities: { unarchive: true } });
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+
+  assert.equal(stateFetchCount(harness), 2, '打开菜单应刷新一次 state，不能沿用打开前的旧归档状态');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-bar').props['data-cr-relay-parent-archived'], 'true');
+  assert.ok(actionKeys(renderer.tree).includes('unarchive'), '刷新后应出现「恢复旧会话」入口（不再是死入口）');
+});
+
+test('归档状态未知（parentArchived=null）：点「回到原会话」也先 unarchive 再 open', async () => {
+  const harness = loadBundle();
+  harness.setState({ ok: true, chain: CHAIN, capabilities: { unarchive: true } });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'parent')[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID], '未知状态也要先恢复（unarchive 幂等）');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID]);
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-menu'), null, '成功后关闭菜单');
+});
+
+test('恢复失败换通道重试：宿主 API 失败 → HTTP recover 成功，仍能切回旧会话', async () => {
+  const harness = loadBundle({ unarchiveFailTimes: 1 });
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true, capabilities: { unarchive: true } });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, [OLD_SESSION_ID], '宿主 API 失败一次');
+  assert.deepEqual(harness.actionCalls, [{ action: 'recover', sessionId: OLD_SESSION_ID }], '换 HTTP recover 通道重试');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID], '重试成功后再 open（不在失败时切走）');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-menu'), null, '重试成功后菜单关闭');
+});
+
+test('恢复失败同通道重试：老宿主只有 HTTP recover，第一次失败第二次成功', async () => {
+  const harness = loadBundle({ withUnarchive: false, recoverFailTimes: 1 });
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true, capabilities: { unarchive: true } });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'unarchive')[0].props.onClick();
+  await renderer.settle();
+  assert.equal(harness.actionCalls.length, 2, '只有一条通道时同通道重试一次');
+  assert.deepEqual(harness.openCalls, [OLD_SESSION_ID]);
+});
+
+test('没有恢复能力（客户端无 unarchiveSession + 服务端 capabilities.unarchive=false）：隐藏恢复入口', async () => {
+  const harness = loadBundle({ withUnarchive: false });
+  harness.setState({ ok: true, chain: CHAIN, parentArchived: true, capabilities: { unarchive: false } });
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  assert.deepEqual(actionKeys(renderer.tree), ['doc', 'parent', 'chain', 'roadmap'], '老宿主没有恢复能力时不显示「恢复旧会话」');
+});
+
+test('父会话出站记录（next）补 path：优先 next，不被父会话自己的入站 chain 带偏', async () => {
+  const harness = loadBundle();
+  const { path, ...localNoPath } = CHAIN;
+  harness.setState({ ok: true, chain: localNoPath, sessionId: SESSION_ID });
+  // 父会话自己的 chain 是它的入站记录（另一份交接单），next 才是「本会话这一跳」的出站记录。
+  harness.setState(
+    {
+      ok: true,
+      sessionId: OLD_SESSION_ID,
+      chain: { ordinal: 7, baseTitle: '更早的链', parentId: 'grandparent', childId: OLD_SESSION_ID, scheme: 'history-n', path: '/tmp/handoffs/handoff-grandparent.md' },
+      next: { ...CHAIN, parentId: OLD_SESSION_ID, childId: SESSION_ID },
+    },
+    OLD_SESSION_ID,
+  );
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  assert.equal(
+    findByAttr(renderer.tree, 'data-cr-relay-bar').props['data-cr-relay-path'],
+    CHAIN.path,
+    '应从父会话的 next（出站）补回本跳的交接单路径',
+  );
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. 0.5.1 批 2：pin 失效标注 / 原生压缩预警 / 归档开关 + 置顶确认
+ * ------------------------------------------------------------------ */
+
+const INDICATOR_BASE = {
+  sessionId: SESSION_ID,
+  revision: 1,
+  pressure: 400,
+  window: 100000,
+  ratio: 0.004,
+  summaries: 0,
+  advice: 'none',
+  thresholds: { compactAt: 40000, handoffAt: 60000, compactRatio: 0.4, handoffRatio: 0.6 },
+  colors: null,
+  pins: {
+    count: 1,
+    seqs: [5],
+    marks: [{ seq: 5, ratio: 0.5 }],
+    stale: { count: 0, seqs: [], native: 0, other: 0, unknown: 0 },
+    atRisk: null,
+  },
+  compactRange: null,
+  compactRangeReason: null,
+  busy: false,
+  compressHint: null,
+  native: {
+    autoEnabled: true,
+    thresholdRatio: 0.8,
+    ratio: 0.75,
+    thresholdTokens: 75000,
+    contextWindow: 100000,
+    headroomTokens: 0,
+    overridden: false,
+    route: null,
+  },
+  chain: null,
+  parentArchived: null,
+  capabilities: { unarchive: true },
+  sessionPinned: null,
+};
+
+function indicatorState(overrides = {}) {
+  return { ...INDICATOR_BASE, ...overrides };
+}
+
+async function mountIndicator(harness) {
+  const renderer = harness.mountLeft(SESSION_ID);
+  await renderer.settle();
+  const trigger = findByAttr(renderer.tree, 'data-cr-level');
+  assert.ok(trigger !== null, '应渲染指示灯按钮');
+  return { renderer, trigger };
+}
+
+test('指示灯：被原生压缩移除的 pin 标「已失效」，既不假装还在也不消失', async () => {
+  const harness = loadBundle();
+  harness.setState(
+    indicatorState({
+      pins: {
+        count: 1,
+        seqs: [5],
+        marks: [{ seq: 5, ratio: 0.5 }],
+        stale: { count: 2, seqs: [1, 2], native: 2, other: 0, unknown: 0 },
+        atRisk: null,
+      },
+    }),
+  );
+  const { renderer, trigger } = await mountIndicator(harness);
+  assert.equal(trigger.props['data-cr-pins'], '1', 'live 计数仍只算 surface 上还存在的 pin');
+  assert.equal(trigger.props['data-cr-pins-stale'], '2');
+
+  trigger.props.onMouseEnter({ currentTarget: rowElement });
+  await renderer.settle();
+  const stale = findByAttr(renderer.tree, 'data-cr-pin-stale');
+  assert.ok(stale !== null, '悬停卡要显示失效标注');
+  assert.ok(textOf(stale).includes('已失效 2 条'), textOf(stale));
+  assert.ok(textOf(stale).includes('随原生压缩移除'), textOf(stale));
+});
+
+test('指示灯：环只表达容量——有 pin 也不画位置块，计数/失效率仍在悬停卡与菜单', async () => {
+  const harness = loadBundle();
+  harness.setState(
+    indicatorState({
+      pins: {
+        count: 2,
+        seqs: [4, 5],
+        marks: [
+          { seq: 4, ratio: 0.25 },
+          { seq: 5, ratio: 0.75 },
+        ],
+        stale: { count: 1, seqs: [1], native: 1, other: 0, unknown: 0 },
+        atRisk: null,
+      },
+    }),
+  );
+  const { renderer, trigger } = await mountIndicator(harness);
+  // 0.5.1 设计定稿：环只表达容量，pin 位置标记归 0.6 时间线——即使 state 里有 marks 也不画。
+  assert.equal(findByAttr(renderer.tree, 'data-cr-pin-mark'), null, '有 pin 也不应在环上画位置块');
+  assert.equal(trigger.props['data-cr-pins'], '2', '已锁定计数照旧');
+  assert.equal(trigger.props['data-cr-pins-stale'], '1', '失效率照旧');
+
+  trigger.props.onMouseEnter({ currentTarget: rowElement });
+  await renderer.settle();
+  const tooltip = findByAttr(renderer.tree, 'data-cr-tooltip');
+  assert.ok(tooltip !== null, '悬停卡应出现');
+  assert.ok(textOf(tooltip).includes('已锁定 2 条'), textOf(tooltip));
+  assert.ok(textOf(tooltip).includes('已失效 1 条'), textOf(tooltip));
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const pinItem = findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'pin')[0];
+  assert.ok(pinItem !== undefined, '菜单要有锁定项');
+  assert.ok(textOf(pinItem).includes('已锁 2 条'), textOf(pinItem));
+  assert.ok(textOf(pinItem).includes('失效 1'), textOf(pinItem));
+});
+
+test('指示灯：原生压缩预计覆盖锁定消息时，悬停卡 + 主动提示都给出「先交接或解锁」', async () => {
+  const harness = loadBundle();
+  harness.setState(
+    indicatorState({
+      pins: {
+        count: 2,
+        seqs: [4, 5],
+        marks: [],
+        stale: { count: 0, seqs: [], native: 0, other: 0, unknown: 0 },
+        atRisk: { count: 2, seqs: [4, 5] },
+      },
+    }),
+  );
+  const { renderer, trigger } = await mountIndicator(harness);
+  assert.equal(trigger.props['data-cr-pins-risk'], '2');
+  trigger.props.onMouseEnter({ currentTarget: rowElement });
+  await renderer.settle();
+
+  const risk = findByAttr(renderer.tree, 'data-cr-pin-risk');
+  assert.ok(risk !== null, '悬停卡要有原生压缩覆盖预警');
+  assert.ok(textOf(risk).includes('原生压缩预计覆盖 2 条锁定消息'), textOf(risk));
+  // 主动提示（toast）：与悬停卡同一口径，建议先交接或解锁。
+  const toast = findAll(renderer.tree, (node) => typeof textOf(node) === 'string' && textOf(node).includes('建议先交接（/handoff）'))[0];
+  assert.ok(toast !== undefined, `应有主动提示：${textOf(renderer.tree).slice(-300)}`);
+});
+
+test('交接预览：置顶会话必须明确选择「交接并归档（取消置顶）」或「只交接，保留置顶」', async () => {
+  const harness = loadBundle();
+  harness.setState(indicatorState({ sessionPinned: true }));
+  const { renderer, trigger } = await mountIndicator(harness);
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const handoffItem = findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'handoff')[0];
+  assert.ok(handoffItem !== undefined, '菜单应有交接入口');
+  handoffItem.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await renderer.settle();
+
+  const panel = findByAttr(renderer.tree, 'data-cr-handoff-preview');
+  assert.ok(panel !== null, '应打开交接预览');
+  const warning = findByAttr(renderer.tree, 'data-cr-handoff-pinned-warning');
+  assert.ok(warning !== null, '置顶会话必须弹「归档会取消置顶」提示');
+  assert.ok(textOf(warning).includes('归档会取消置顶'), textOf(warning));
+  assert.equal(findByAttr(renderer.tree, 'data-cr-handoff-archive').props.checked, true, '归档默认开');
+  const runBtn = findByAttr(renderer.tree, 'data-cr-handoff-run');
+  assert.ok(textOf(runBtn).includes('交接并归档（取消置顶）'), textOf(runBtn));
+  const keepBtn = findByAttr(renderer.tree, 'data-cr-handoff-keep');
+  assert.ok(keepBtn !== null, '必须提供「只交接，保留置顶」出口');
+  assert.ok(textOf(keepBtn).includes('只交接，保留置顶'));
+
+  runBtn.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const handoffCalls = harness.actionCalls.filter((call) => call.action === 'handoff');
+  assert.equal(handoffCalls.length, 1);
+  assert.equal(handoffCalls.at(-1).archive, true);
+  assert.equal(handoffCalls.at(-1).confirmUnpin, true, '确认归档必须显式带 confirmUnpin（服务端才归档）');
+});
+
+test('交接预览：选「只交接，保留置顶」→ archive:false（旧会话不归档、置顶不动）', async () => {
+  const harness = loadBundle();
+  harness.setState(indicatorState({ sessionPinned: true }));
+  const { renderer, trigger } = await mountIndicator(harness);
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'handoff')[0].props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-handoff-keep').props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const handoff = harness.actionCalls.filter((call) => call.action === 'handoff').at(-1);
+  assert.equal(handoff.archive, false);
+  assert.equal(handoff.confirmUnpin, undefined, '不归档就不需要取消置顶确认');
+});
+
+test('交接预览：取消勾选归档 → 不弹置顶提示，确认按钮变「不归档」', async () => {
+  const harness = loadBundle();
+  harness.setState(indicatorState({ sessionPinned: true }));
+  const { renderer, trigger } = await mountIndicator(harness);
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'handoff')[0].props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await renderer.settle();
+
+  const checkbox = findByAttr(renderer.tree, 'data-cr-handoff-archive');
+  checkbox.props.onChange({ target: { checked: false } });
+  await renderer.settle();
+  assert.equal(findByAttr(renderer.tree, 'data-cr-handoff-pinned-warning'), null, '不归档就不需要取消置顶确认');
+  const runBtn = findByAttr(renderer.tree, 'data-cr-handoff-run');
+  assert.ok(textOf(runBtn).includes('确认交接（不归档）'), textOf(runBtn));
+
+  runBtn.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const handoff = harness.actionCalls.filter((call) => call.action === 'handoff').at(-1);
+  assert.equal(handoff.archive, false);
+});
+
+/* ------------------------------------------------------------------ *
+ * 8. 0.5.1 批 3：完整交接链列表 + 父→子入口
+ *
+ * 完整链的数据是**按需**读来的：点「完整交接链」之前不预加载；每层一次 state GET；
+ * 最多 8 跳、按 sessionId 去重防循环；某层读不到就停下并给重试（已读到的行保留），
+ * 主菜单其他入口不受影响。
+ * ------------------------------------------------------------------ */
+
+const CHAIN_TITLE = '原会话标题';
+const ancId = (level) => (level === 0 ? SESSION_ID : `session-anc-${level}`);
+
+/**
+ * depth 层祖先链夹具：self(0) → anc-1 → … → anc-depth（根，没有入站记录）。
+ * 第 k 层的 state.chain 指向它的父会话（ordinal = 它自己的链号），next 是它交接给
+ * 下一代的出站记录 —— 形状与真实 readState 一致（0.5.1 起 chain=入站、next=出站）。
+ */
+function chainFixture(depth) {
+  const states = new Map();
+  for (let level = 0; level < depth; level += 1) {
+    const ordinal = depth - level;
+    const childId = ancId(level);
+    const parentId = ancId(level + 1);
+    const hop = { ordinal, baseTitle: CHAIN_TITLE, parentId, childId, scheme: 'history-n', path: `/tmp/dcr-handoffs/handoff-hop-${ordinal}.md` };
+    states.set(childId, {
+      ok: true,
+      sessionId: childId,
+      chain: hop,
+      next: hop,
+      nextArchived: false,
+      capabilities: { unarchive: true },
+    });
+  }
+  const rootId = ancId(depth);
+  states.set(rootId, { ok: true, sessionId: rootId, chain: null, next: null, nextArchived: null, capabilities: { unarchive: true } });
+  return states;
+}
+
+function applyStates(harness, states) {
+  for (const [sessionId, state] of states) harness.setState(state, sessionId);
+}
+
+const chainRows = (tree) => findAll(tree, (node) => node.props?.['data-cr-relay-chain-row'] !== undefined);
+
+async function mountBar(harness) {
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  await renderer.settle();
+  return renderer;
+}
+
+async function openMenu(harness, renderer) {
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+}
+
+async function openChainView(harness, renderer) {
+  await openMenu(harness, renderer);
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'chain')[0].props.onClick();
+  await renderer.settle();
+}
+
+/** 祖先会话的 state GET 次数（不含本会话；菜单打开时会刷一次本会话 state）。 */
+const ancestorFetches = (harness) =>
+  harness.fetches.filter(
+    (entry) => String(entry.url).startsWith('/api/compact-relay-state') && !String(entry.url).endsWith(encodeURIComponent(SESSION_ID)),
+  ).length;
+
+test('完整交接链：按需展开才逐级拉，每层一次 state GET，行文案「历史 N：原名」', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(3));
+  const renderer = await mountBar(harness);
+  assert.equal(stateFetchCount(harness), 1, '没点开完整链之前不预加载祖先（只有本会话一次）');
+
+  await openMenu(harness, renderer);
+  assert.equal(ancestorFetches(harness), 0, '只是打开菜单不拉祖先');
+  const baseline = stateFetchCount(harness);
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'chain')[0].props.onClick();
+  await renderer.settle();
+
+  const rows = chainRows(renderer.tree);
+  assert.deepEqual(
+    rows.map((row) => row.props['data-cr-relay-chain-row']),
+    ['session-anc-1', 'session-anc-2', 'session-anc-3'],
+    '从近到远逐级列出祖先（根会话没有入站记录，不再往下拉）',
+  );
+  rows.forEach((row, index) => {
+    assert.ok(textOf(row).includes(`历史 ${3 - index}：${CHAIN_TITLE}`), `第 ${index + 1} 行文案不对：${textOf(row)}`);
+  });
+  assert.equal(ancestorFetches(harness), 3, '展开后每层祖先各 1 次 state GET（3 层）');
+  assert.equal(stateFetchCount(harness) - baseline, 3, '展开完整链只多这 3 次请求（不并发、不重复）');
+
+  // 行内交接单入口：每层都带 path → 都可点。
+  const docButtons = rows.map((row) => findAll(row, (node) => node.props?.['data-cr-relay-chain-doc'] !== undefined)[0]);
+  assert.deepEqual(docButtons.map((button) => button.props.disabled), [false, false, false]);
+});
+
+test('完整交接链：最多 8 跳，超出时明说只显示最近 8 层', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(12));
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+
+  const rows = chainRows(renderer.tree);
+  assert.equal(rows.length, 8, '上限 8 跳（防万一条路成环/链极长）');
+  assert.equal(ancestorFetches(harness), 8, '8 次祖先 state GET，不多拉');
+  const capped = findByAttr(renderer.tree, 'data-cr-relay-chain-capped');
+  assert.ok(capped !== null, '截断时要有说明，不能假装到头了');
+  assert.ok(textOf(capped).includes('8'), `应说明只显示最近 8 层：${textOf(capped)}`);
+});
+
+test('完整交接链：链路成环时按 sessionId 去重，不会无限拉', async () => {
+  const harness = loadBundle();
+  const mk = (id, parentId, ordinal) => ({
+    ok: true,
+    sessionId: id,
+    chain: { ordinal, baseTitle: CHAIN_TITLE, parentId, childId: id, scheme: 'history-n', path: `/tmp/dcr-handoffs/handoff-${ordinal}.md` },
+    next: null,
+    capabilities: { unarchive: true },
+  });
+  harness.setState(mk(SESSION_ID, 'session-anc-1', 3), SESSION_ID);
+  harness.setState(mk('session-anc-1', 'session-anc-2', 2), 'session-anc-1');
+  harness.setState(mk('session-anc-2', 'session-anc-1', 1), 'session-anc-2'); // 指回已经列过的会话
+
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  assert.deepEqual(
+    chainRows(renderer.tree).map((row) => row.props['data-cr-relay-chain-row']),
+    ['session-anc-1', 'session-anc-2'],
+    '同一条会话只出现一次',
+  );
+  assert.equal(ancestorFetches(harness), 2, '成环就停：只拉了这 2 层祖先');
+});
+
+test('完整交接链：某层读不到 → 「无法读取更早的链路」+ 重试从断点继续，且不影响其他入口', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(3));
+  harness.failState('session-anc-2');
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+
+  const error = findByAttr(renderer.tree, 'data-cr-relay-chain-error');
+  assert.ok(error !== null, '读不到祖先时要有明确提示');
+  assert.ok(textOf(error).includes('无法读取更早的链路'), textOf(error));
+  assert.equal(chainRows(renderer.tree).length, 1, '已读到的那一层保留（不整块清空）');
+  assert.equal(ancestorFetches(harness), 2, 'anc-1 成功 + anc-2 失败；失败后不再往下拉');
+
+  // 宿主恢复后点「重试」：从断点继续，已经读到的层不重复拉。
+  harness.healState('session-anc-2');
+  findByAttr(renderer.tree, 'data-cr-relay-chain-retry').props.onClick();
+  await renderer.settle();
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-chain-error'), null, '重试成功后错误提示消失');
+  assert.equal(chainRows(renderer.tree).length, 3, '剩下的两层补上');
+  assert.equal(ancestorFetches(harness), 4, 'anc-1 不重复拉（anc-1、失败的 anc-2、重试的 anc-2 与 anc-3）');
+
+  // 返回主菜单：其他入口照常可用（链读失败不阻断菜单）。
+  findByAttr(renderer.tree, 'data-cr-relay-chain-back').props.onClick();
+  await renderer.settle();
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-chain'), null, '返回后回到主菜单');
+  const parentItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'parent')[0];
+  assert.ok(parentItem !== undefined && parentItem.props.disabled === false, '「回到原会话」仍可用');
+  parentItem.props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.openCalls.slice(-1), ['session-anc-1'], '链读失败不影响跳到原会话');
+});
+
+test('完整交接链：祖先未加载 → 「上一层会话未打开」+「打开并继续」（不再只是错误提示）', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(2));
+  // 更早的那一层还没加载：宿主回 sessionId=null + chain=null。如果把它当成「没有父会话」
+  // 就会静默少列一层 —— 必须停在断点，并给出可操作入口。
+  harness.setState({ ok: true, sessionId: null, chain: null, capabilities: { unarchive: true } }, 'session-anc-2');
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  assert.equal(chainRows(renderer.tree).length, 1, '只列真正读到的那一层');
+  const error = findByAttr(renderer.tree, 'data-cr-relay-chain-error');
+  assert.ok(error !== null, '「没加载」不能当成「到头了」');
+  assert.ok(textOf(error).includes('上一层会话未打开'), textOf(error));
+  assert.equal(
+    error.props['data-cr-relay-chain-blocked'],
+    'session-anc-2',
+    '错误块要标明断点会话，界面才能给出对应入口',
+  );
+  const openParent = findByAttr(renderer.tree, 'data-cr-relay-chain-open-parent');
+  assert.ok(openParent !== null, '未加载时必须给出「打开并继续」可操作入口');
+  assert.equal(openParent.props['data-cr-relay-chain-open-parent'], 'session-anc-2');
+  assert.ok(textOf(openParent).includes('打开并继续'));
+
+  // 用户在别处打开那个会话后，手动「重试」仍然可用（保留旧兜底路径）。
+  harness.setState(chainFixture(2).get('session-anc-2'), 'session-anc-2');
+  findByAttr(renderer.tree, 'data-cr-relay-chain-retry').props.onClick();
+  await renderer.settle();
+  assert.equal(chainRows(renderer.tree).length, 2, '重试后补齐');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-chain-error'), null, '成功后续上就不该再有错误提示');
+});
+
+test('完整交接链：未加载断点点「打开并继续」→ unarchive + openSession，加载后自动续读', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(2));
+  harness.setState({ ok: true, sessionId: null, chain: null, capabilities: { unarchive: true } }, 'session-anc-2');
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  assert.equal(chainRows(renderer.tree).length, 1, '断点前只列已读层');
+
+  // 宿主在 openSession 后把该会话加载进内存（模拟真实切会话）。
+  harness.setState(chainFixture(2).get('session-anc-2'), 'session-anc-2');
+  findByAttr(renderer.tree, 'data-cr-relay-chain-open-parent').props.onClick();
+  await renderer.settle();
+
+  assert.deepEqual(harness.unarchiveCalls, ['session-anc-2'], '先走宿主 unarchive（幂等，未归档是 no-op）');
+  assert.deepEqual(harness.openCalls, ['session-anc-2'], '再调用 openSession 打开上一层会话');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-chain-error'), null, '自动续读成功后错误提示消失');
+  assert.equal(chainRows(renderer.tree).length, 2, '自动续读补齐剩余层，不用用户再手点重试');
+});
+
+test('完整交接链：服务端整链端点一次读全，不再逐级 GET 祖先 state（祖先未加载也行）', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(2));
+  // 服务端已经按持久化日志读完整条链：客户端只发一次整链 GET。
+  harness.setChainResponse({
+    ok: true,
+    sessionId: SESSION_ID,
+    done: true,
+    capped: false,
+    unreadable: null,
+    rows: [
+      { sessionId: 'session-anc-1', ordinal: 2, baseTitle: CHAIN_TITLE, scheme: 'history-n', path: '/tmp/dcr-handoffs/handoff-hop-2.md' },
+      { sessionId: 'session-anc-2', ordinal: 1, baseTitle: CHAIN_TITLE, scheme: 'history-n', path: '/tmp/dcr-handoffs/handoff-hop-1.md' },
+    ],
+  });
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+
+  const rows = chainRows(renderer.tree);
+  assert.deepEqual(
+    rows.map((row) => row.props['data-cr-relay-chain-row']),
+    ['session-anc-1', 'session-anc-2'],
+    '一次拿到整条链（祖先没加载也能列全）',
+  );
+  assert.equal(ancestorFetches(harness), 0, '不再逐级 GET 祖先的 /api/compact-relay-state');
+  const chainCalls = harness.fetches.filter((entry) => String(entry.url).startsWith('/api/compact-relay-chain'));
+  assert.equal(chainCalls.length, 1, '整链端点只打一次（不逐级、不重复）');
+  assert.ok(String(chainCalls[0].url).includes(`sessionId=${SESSION_ID}`), '整链端点带当前会话 id');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-chain-error'), null);
+
+  // 行内交接单仍可直接打开（服务端一次带回 path）。
+  const docButtons = rows.map((row) => findAll(row, (node) => node.props?.['data-cr-relay-chain-doc'] !== undefined)[0]);
+  assert.deepEqual(docButtons.map((button) => button.props.disabled), [false, false]);
+});
+
+test('完整交接链：整链端点读取失败 → 已读行保留 +「打开并继续」；not-found 不造死入口', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(2));
+  harness.setChainResponse({
+    ok: true,
+    sessionId: SESSION_ID,
+    done: false,
+    capped: false,
+    unreadable: { sessionId: 'session-anc-2', reason: 'error' },
+    rows: [
+      { sessionId: 'session-anc-1', ordinal: 2, baseTitle: CHAIN_TITLE, scheme: 'history-n', path: '/tmp/dcr-handoffs/handoff-hop-2.md' },
+    ],
+  });
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  assert.equal(chainRows(renderer.tree).length, 1, '已读到的层保留');
+  const error = findByAttr(renderer.tree, 'data-cr-relay-chain-error');
+  assert.ok(error !== null);
+  assert.ok(textOf(error).includes('无法读取更早的链路'));
+  assert.equal(
+    findByAttr(renderer.tree, 'data-cr-relay-chain-open-parent').props['data-cr-relay-chain-open-parent'],
+    'session-anc-2',
+    '读日志临时失败：打开这一层可能让它变成 live，给出入口',
+  );
+
+  // 持久化里根本没有这一层（已删除/从未落盘）：打开也救不回来，只给重试。
+  const missingHarness = loadBundle();
+  applyStates(missingHarness, chainFixture(2));
+  missingHarness.setChainResponse({
+    ok: true,
+    sessionId: SESSION_ID,
+    done: false,
+    capped: false,
+    unreadable: { sessionId: 'session-anc-2', reason: 'not-found' },
+    rows: [
+      { sessionId: 'session-anc-1', ordinal: 2, baseTitle: CHAIN_TITLE, scheme: 'history-n', path: '/tmp/dcr-handoffs/handoff-hop-2.md' },
+    ],
+  });
+  const missingRenderer = await mountBar(missingHarness);
+  await openChainView(missingHarness, missingRenderer);
+  assert.equal(findByAttr(missingRenderer.tree, 'data-cr-relay-chain-open-parent'), null, 'not-found 不应出现必然失败的入口');
+  assert.ok(findByAttr(missingRenderer.tree, 'data-cr-relay-chain-retry') !== null, '仍可重试');
+});
+
+test('完整交接链：行内交接单只用 basename；本层记录没 path 时用父会话出站记录的 path', async () => {
+  const harness = loadBundle();
+  // 老记录：本会话与 anc-1 的入站记录都没有 path，路径只写在父会话的出站 next 里。
+  harness.setState(
+    {
+      ok: true,
+      sessionId: SESSION_ID,
+      chain: { ordinal: 2, baseTitle: CHAIN_TITLE, parentId: 'session-anc-1', childId: SESSION_ID, scheme: 'history-n' },
+      capabilities: { unarchive: true },
+    },
+    SESSION_ID,
+  );
+  harness.setState(
+    {
+      ok: true,
+      sessionId: 'session-anc-1',
+      chain: { ordinal: 1, baseTitle: CHAIN_TITLE, parentId: 'session-anc-2', childId: 'session-anc-1', scheme: 'history-n' },
+      next: {
+        ordinal: 2,
+        baseTitle: CHAIN_TITLE,
+        parentId: 'session-anc-1',
+        childId: SESSION_ID,
+        scheme: 'history-n',
+        path: '/tmp/dcr-handoffs/handoff-hop-2.md',
+      },
+      capabilities: { unarchive: true },
+    },
+    'session-anc-1',
+  );
+  harness.setState(
+    {
+      ok: true,
+      sessionId: 'session-anc-2',
+      chain: null,
+      next: {
+        ordinal: 1,
+        baseTitle: CHAIN_TITLE,
+        parentId: 'session-anc-2',
+        childId: 'session-anc-1',
+        scheme: 'history-n',
+        path: '/tmp/dcr-handoffs/handoff-hop-1.md',
+      },
+      capabilities: { unarchive: true },
+    },
+    'session-anc-2',
+  );
+
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  const rows = chainRows(renderer.tree);
+  assert.equal(rows.length, 2);
+  const docButtons = rows.map((row) => findAll(row, (node) => node.props?.['data-cr-relay-chain-doc'] !== undefined)[0]);
+  assert.deepEqual(docButtons.map((button) => button.props.disabled), [false, false], '从父会话出站记录补回 path 后行内交接单可点');
+
+  docButtons[0].props.onClick();
+  await renderer.settle();
+  const docFetches = harness.fetches.filter((entry) => String(entry.url).includes('/api/compact-relay-handoffs?file='));
+  const file = decodeURIComponent(String(docFetches.at(-1).url).split('file=')[1]);
+  assert.equal(file, 'handoff-hop-2.md', '接口只接受 basename');
+  assert.equal(file.includes('/'), false, '不能把全路径塞进 file=');
+  assert.ok(textOf(findByAttr(renderer.tree, 'data-cr-relay-doc')).includes('交接单'));
+
+  findByAttr(renderer.tree, 'data-cr-relay-doc-back').props.onClick();
+  await renderer.settle();
+  assert.ok(findByAttr(renderer.tree, 'data-cr-relay-chain') !== null, '从交接单返回要回到完整链列表');
+  assert.equal(chainRows(renderer.tree).length, 2);
+});
+
+test('完整交接链：整条链路都没有交接单路径 → 行内入口禁用并提示「暂无交接单」', async () => {
+  const harness = loadBundle();
+  harness.setState(
+    {
+      ok: true,
+      sessionId: SESSION_ID,
+      chain: { ordinal: 1, baseTitle: CHAIN_TITLE, parentId: 'session-anc-1', childId: SESSION_ID, scheme: 'history-n' },
+      capabilities: { unarchive: true },
+    },
+    SESSION_ID,
+  );
+  harness.setState(
+    { ok: true, sessionId: 'session-anc-1', chain: null, next: null, capabilities: { unarchive: true } },
+    'session-anc-1',
+  );
+
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  const row = chainRows(renderer.tree)[0];
+  const docButton = findAll(row, (node) => node.props?.['data-cr-relay-chain-doc'] !== undefined)[0];
+  assert.equal(docButton.props.disabled, true, '没有 path 时不能给出会必然失败的入口');
+  assert.ok(String(docButton.props.title).includes('暂无交接单'), String(docButton.props.title));
+});
+
+test('完整交接链：点某一层 → 先 unarchive 再 openSession（旧会话默认已归档，不能撞归档墙）', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(2));
+  const renderer = await mountBar(harness);
+  await openChainView(harness, renderer);
+  const rows = chainRows(renderer.tree);
+  assert.equal(rows.length, 2);
+  findAll(rows[1], (node) => node.props?.['data-cr-relay-chain-open'] !== undefined)[0].props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.unarchiveCalls, ['session-anc-2'], '先恢复（unarchive 幂等，未归档时是 no-op）');
+  assert.deepEqual(harness.openCalls, ['session-anc-2'], '再切到该会话（ctx.uiWorkspace.openSession）');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-menu'), null, '跳转成功后菜单关闭');
+});
+
+const OUTBOUND = {
+  ordinal: 2,
+  baseTitle: CHAIN_TITLE,
+  parentId: SESSION_ID,
+  childId: 'session-child-9',
+  scheme: 'history-n',
+  path: '/tmp/dcr-handoffs/handoff-out.md',
+};
+
+test('父→子入口：只有出站记录（chain=null）也显示接力条与「去新会话」', async () => {
+  const harness = loadBundle();
+  harness.setState({ ok: true, sessionId: SESSION_ID, chain: null, next: OUTBOUND, nextArchived: false, capabilities: { unarchive: true } });
+  const renderer = await mountBar(harness);
+
+  const bar = findByAttr(renderer.tree, 'data-cr-relay-bar');
+  assert.ok(bar !== null, '父会话侧（已把接力棒交给下一代）也要有接力条');
+  assert.equal(bar.props['data-cr-relay-next'], 'session-child-9', '出站目标要透到 DOM（调试/测试用）');
+  assert.ok(textOf(bar).includes('已交接给新会话'), `父会话侧文案不对：${textOf(bar)}`);
+
+  bar.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  assert.deepEqual(actionKeys(renderer.tree), ['doc', 'next', 'roadmap'], '父会话侧：交接单 + 去新会话 + 路线图占位');
+  const nextItem = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'next')[0];
+  assert.ok(textOf(nextItem).includes('去新会话'), textOf(nextItem));
+  nextItem.props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.openCalls, ['session-child-9'], 'openSession(next.childId)');
+  assert.deepEqual(harness.unarchiveCalls, [], 'nextArchived=false → 不需要恢复，直接切');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-relay-menu'), null, '跳转成功后菜单关闭');
+});
+
+test('父→子入口：next.childId 指回本会话（脏记录/老插件形态）→ 不出「去新会话」', async () => {
+  const harness = loadBundle();
+  harness.setState({ ok: true, sessionId: SESSION_ID, chain: null, next: { ...OUTBOUND, childId: SESSION_ID }, capabilities: { unarchive: true } });
+  const renderer = await mountBar(harness);
+  assert.equal(renderer.tree, null, '不能给出「把自己再打开一次」的入口');
+});
+
+test('父→子入口：新会话已归档或状态未知 → 先 unarchive 再 open', async () => {
+  for (const nextArchived of [true, undefined]) {
+    const harness = loadBundle();
+    harness.setState({
+      ok: true,
+      sessionId: SESSION_ID,
+      chain: null,
+      next: OUTBOUND,
+      ...(nextArchived === undefined ? {} : { nextArchived }),
+      capabilities: { unarchive: true },
+    });
+    const renderer = await mountBar(harness);
+    findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+    await renderer.settle();
+    findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'next')[0].props.onClick();
+    await renderer.settle();
+    assert.deepEqual(harness.unarchiveCalls, ['session-child-9'], `nextArchived=${String(nextArchived)} 也要先恢复（幂等）`);
+    assert.deepEqual(harness.openCalls, ['session-child-9'], '恢复后再切');
+  }
+});
+
+test('中段会话：既有「回到原会话」也有「去新会话」，还能列出完整链', async () => {
+  const harness = loadBundle();
+  applyStates(harness, chainFixture(1));
+  harness.setState(
+    {
+      ok: true,
+      sessionId: SESSION_ID,
+      parentArchived: false,
+      nextArchived: false,
+      capabilities: { unarchive: true },
+      chain: { ordinal: 2, baseTitle: CHAIN_TITLE, parentId: 'session-anc-1', childId: SESSION_ID, scheme: 'history-n', path: '/tmp/dcr-handoffs/handoff-hop-2.md' },
+      next: OUTBOUND,
+    },
+    SESSION_ID,
+  );
+  const renderer = await mountBar(harness);
+  findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  assert.deepEqual(actionKeys(renderer.tree), ['doc', 'next', 'parent', 'chain', 'roadmap'], '两个方向 + 完整链都在');
+
+  // 菜单已经开着：直接点「完整交接链」，不要再点一次接力条（那会关掉菜单）。
+  findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'chain')[0].props.onClick();
+  await renderer.settle();
+  assert.equal(chainRows(renderer.tree).length, 1, '中段会话只列出它自己的祖先');
+  assert.ok(textOf(chainRows(renderer.tree)[0]).includes('历史 2：原会话标题'));
+});
+
+/* ------------------------------------------------------------------ *
+ * 9. 执行
  * ------------------------------------------------------------------ */
 
 let passed = 0;
@@ -710,3 +1606,5 @@ if (failures.length > 0) {
   }
   process.exit(1);
 }
+// 组件里还有轮询/引导/toast 的浏览器定时器（真实页面会一直活着）；单测跑完显式退出。
+process.exit(0);

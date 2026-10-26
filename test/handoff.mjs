@@ -23,7 +23,7 @@ import { handoff, previewHandoff } from '../lib/actions/handoff.js';
 import { createInflight } from '../lib/actions/inflight.js';
 import { listPins, pinByIndex, pinLastTurn, togglePin, unpinAll } from '../lib/actions/pin.js';
 import { testCompact } from '../lib/actions/test-compact.js';
-import { PIN_RECORD_TYPE } from '../lib/core/pins.js';
+import { PIN_RECORD_TYPE, latestPinnedSeqs } from '../lib/core/pins.js';
 import { RELAY_RECORD_TYPE } from '../lib/core/relay.js';
 import { createLedgerStore } from '../lib/dsh/ledger.js';
 import { buildSiteSnapshot, gitInfo, pendingJobs } from '../lib/dsh/site-info.js';
@@ -957,11 +957,12 @@ test('M6 钉住：/pin 钉最近一轮 / list / 按序号 / 取消', () => {
   assert.deepEqual(toggledOff.pinned, [], 'toggle：有钉住时清空');
 });
 
-test('P3-03：锁定快照过期（消息已不在 surface）时，菜单 toggle 不再误作「解锁」', () => {
+test('0.5.1 批 2：锁定快照全部过期时，菜单显示「解除失效锁定」→ toggle 清空快照（不反向新锁）', () => {
   const { ctx, engine } = makeCtx();
   const depsOf = () => createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
 
-  // 场景 A：快照里的 seq 已被原生压缩/清屏带走 → 菜单显示「未锁定」，点击应执行锁定。
+  // 场景 A：快照里的 seq 已被原生压缩/清屏带走 → 0.5.1 批次 2 的菜单显示
+  // 「解除失效锁定（1 条）」，所以 toggle 必须清空快照；不能因为 live=0 就锁最近一条。
   const sessionA = baseSourceSession();
   const depsA = depsOf();
   const agentA = createAgent(sessionA);
@@ -970,8 +971,8 @@ test('P3-03：锁定快照过期（消息已不在 surface）时，菜单 toggle
   sessionA.surface.replaceGeneration += 1;
   assert.equal(livePinnedSeqs(sessionA).length, 0, '展示口径应为 0 条有效锁定');
   const toggled = togglePin(depsA, { agent: agentA });
-  assert.deepEqual(toggled.pinned, [3], '菜单显示未锁定 → 点击应当锁定，而不是解锁');
-  assert.equal(toggled.message.includes('已锁定'), true);
+  assert.deepEqual(toggled.pinned, [], '菜单显示「解除失效锁定」→ 点击应清空，而不是新锁');
+  assert.deepEqual(latestPinnedSeqs(sessionA.log), [], '最新 pin 记录应是空集合');
 
   // 场景 B：显式解锁时，过期快照不算「解锁了几条」，并说明只是清理了过期记录。
   const sessionB = baseSourceSession();

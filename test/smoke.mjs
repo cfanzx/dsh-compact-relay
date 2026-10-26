@@ -692,10 +692,12 @@ test('P2-3：失败事务的 summary 不算已压缩（幽灵摘要）', () => {
   session.append('compaction/end', { compactionId: 'fail-2' });
   assert.equal(countSummaries(session), 1, '没有 replace 的 summary 不算提交');
 
-  // 无 compactionId 的旧日志按旧口径计数（兼容外部夹具）
+  // 无 compactionId 的旧日志：0.5.1 D01 起同样要求 replace（与 compaction-log 同口径）。
   const legacy = baseSession();
-  legacy.append('compaction/summary', { summary: [] });
-  assert.equal(countSummaries(legacy), 1);
+  const legacySummary = legacy.append('compaction/summary', { summary: [] });
+  assert.equal(countSummaries(legacy), 0, '无 id 且无 replace 的旧日志不算已压缩（D01 统一口径）');
+  legacy.append('user/message', { role: 'user', content: [] }, { sourceEventSeqs: [legacySummary.seq] });
+  assert.equal(countSummaries(legacy), 1, '旧日志有 replace 仍算已压缩（0.4 兼容）');
 });
 
 test('P2-4：切模型后优先读 modelSelection 投影（pending → lastUsed）', () => {
@@ -740,7 +742,11 @@ test('session-view: surface / 摘要计数 / 压缩锁', () => {
   session.append('turn/end', { turn: 1 });
   assert.equal(entryState(session).openTurn, false);
 
-  session.append('compaction/summary', { summary: [] });
+  // 0.5.1 D01：没有 replace 的 summary 不算已提交（与 compaction-log 同口径）。
+  const bare = session.append('compaction/summary', { summary: [] });
+  assert.equal(countSummaries(session), 0, '没有 replace 的 summary 不算提交');
+  // 补一条覆盖它的 replace 之后才算（surface 顺序不变：head 仍是 system/message）。
+  session.append('user/message', { role: 'user', content: [] }, { sourceEventSeqs: [bare.seq] });
   assert.equal(countSummaries(session), 1);
   assert.equal(firstCompactableIdx(session), 1);
 });

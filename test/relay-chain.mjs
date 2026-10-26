@@ -28,7 +28,7 @@ import { HANDOFF_SECTIONS } from '../lib/core/handoff-doc.js';
 import { HISTORY_PREFIX, RELAY_RECORD_TYPE, historyTitleOf, relayTitleOf, splitHandoffTitle } from '../lib/core/relay.js';
 import { REQUIRED_SECTIONS } from '../lib/core/validate-summary.js';
 import { handoffTitlePlanOf } from '../lib/dsh/sessions.js';
-import { normalizeRelayRecord, relayChainOf, relayRecordOf } from '../lib/dsh/relay.js';
+import { normalizeRelayRecord, relayChainOf, relayInboundRecordOf, relayOutboundRecordOf, relayRecordOf } from '../lib/dsh/relay.js';
 import { createAgent, createFakeEngine, createHandoffHost, createPluginDeps, createTmpDir } from './harness/host.mjs';
 import { createFakeLlm } from './harness/llm.mjs';
 import { MockSession, baseSourceSession } from './harness/session.mjs';
@@ -507,12 +507,24 @@ assert.equal(relayChainOf('not-a-record'), null);
 console.log('PASS  0.5.0 F5 投影：relayChainOf 新记录六字段、旧记录缺字段 null、无 path 不带键、无记录 null');
 
 /* ================================================================== *
- * 6) readState：chain 与 relay 同源（F4 additive，旧字段一个不改）
+ * 6) readState：chain=本会话入站记录、next=出站投影（0.5.1 DCR-01）
+ *
+ * 契约变化：0.5.0 的 chain 是「最近一条记录」，祖先会话再次交接后最近一条变成
+ * 出站（childId=下一代）→ 客户端入站判定不成立 → 接力条消失。0.5.1 起：
+ *   - `relay` 旧字段不动（仍是最近一条记录，出站/入站都可能）；
+ *   - `chain` 只取 childId===本会话 的入站记录（接力条据此显示「已接力自」）；
+ *   - `next` 是最近一条出站记录的投影（父→子入口 / 父记录补 path 用，只加不改）。
  * ================================================================== */
 
 const stateCfg = resolveConfig({ retention: { recentTailTokens: 0 } });
 
-function stateDeps() {
+/**
+ * readState 替身依赖。
+ * 0.5.1 起额外用到两件宿主能力：sessionTitle（DCR-02 老链兜底靠标题解析）与
+ * workspaceRegistry（parentArchived / capabilities.unarchive）。
+ * @param {{titles?:Map<string,string>, archivedSessionIds?:string[], unarchive?:boolean}} [input]
+ */
+function stateDeps({ titles = new Map(), archivedSessionIds, unarchive = false } = {}) {
   return {
     ctx: {
       tokenMeter: {
@@ -525,6 +537,20 @@ function stateDeps() {
         async resolveModelInfo() {
           return { context: { contextWindow: 200_000 }, defaultMaxTokens: 8192 };
         },
+      },
+      get(name) {
+        if (name === 'sessionTitle') {
+          return {
+            get: (session) => (session !== undefined && titles.has(session.id) ? { title: titles.get(session.id) } : undefined),
+          };
+        }
+        if (name === 'workspaceRegistry' && (Array.isArray(archivedSessionIds) || unarchive === true)) {
+          return {
+            ...(Array.isArray(archivedSessionIds) ? { archivedSessionIds } : {}),
+            ...(unarchive === true ? { async unarchiveSession() {} } : {}),
+          };
+        }
+        return undefined;
       },
       agents: { get: () => undefined, list: () => [] },
       sessions: { get: () => undefined, flush() {} },
@@ -541,12 +567,29 @@ function agentOf(session) {
   return { id: session.id, session, options: { provider: 'mock', model: 'mock-model' } };
 }
 
+// 6.1 读取器本身：入站 / 出站分开找，旧 relayRecordOf 语义不变。
 {
-  // 最后一跳的子会话：日志里只有自己的 F3 record（ordinal=3、带 path）。
-  // readState 直接把它投影出去 —— 子会话拿到 chain.path，「查看交接单」不需要父会话在场。
-  const childState = await readState(stateDeps(), { agent: agentOf(thirdHop.child) });
-  assert.deepEqual(childState.chain, relayChainOf(childState.relay), 'chain 必须是 relay 的只读投影');
-  assert.deepEqual(childState.chain, {
+  const mid = firstHop.child; // 日志：入站（第 1 跳）+ 出站（第 2 跳）
+  assert.equal(relayRecordOf(mid).ordinal, 2, 'relayRecordOf 仍是最近一条（出站），旧语义不动');
+  assert.equal(relayInboundRecordOf(mid).ordinal, 1, '入站记录 = childId 指向本会话的那条');
+  assert.equal(relayInboundRecordOf(mid).childId, mid.id);
+  assert.equal(relayInboundRecordOf(mid).path, firstHop.result.path, '入站记录带自己那一跳的交接单');
+  assert.equal(relayOutboundRecordOf(mid).ordinal, 2, '出站记录 = 本会话交接给下一代的那条');
+  assert.equal(relayOutboundRecordOf(mid).childId, secondHop.child.id);
+  assert.equal(relayInboundRecordOf(source), null, '根会话没有入站记录');
+  assert.equal(relayOutboundRecordOf(source).childId, firstHop.child.id);
+  assert.equal(relayInboundRecordOf(thirdHop.child).ordinal, 3, '链尾只有入站记录');
+  assert.equal(relayOutboundRecordOf(thirdHop.child), null, '链尾没有出站记录');
+  assert.equal(relayInboundRecordOf(new MockSession({ id: 'session-no-log' })), null, '没有记录 → null');
+}
+
+// 6.2 链尾子会话：只有入站记录 → chain 仍是那份投影，next=null，parentArchived 看父会话。
+{
+  const tailState = await readState(stateDeps({ archivedSessionIds: [thirdHop.parent.id] }), {
+    agent: agentOf(thirdHop.child),
+  });
+  assert.deepEqual(tailState.chain, relayChainOf(tailState.relay), '只有入站记录时 chain 与 relay 同源');
+  assert.deepEqual(tailState.chain, {
     ordinal: 3,
     baseTitle: CLEAN_TITLE,
     parentId: thirdHop.parent.id,
@@ -554,21 +597,201 @@ function agentOf(session) {
     scheme: 'history-n',
     path: thirdHop.result.path,
   });
-  assert.equal(childState.chain.path, thirdHop.result.path, '子会话链自带交接单路径');
+  assert.equal(tailState.next, null, '链尾没有出站记录 → next=null');
+  assert.equal(tailState.parentArchived, true, '链尾会话的父会话（第 2 跳子会话）在归档集合里');
   // 旧字段原样：子记录没写 0.3 旧名，读侧仍补齐（老客户端还能读）。
-  assert.equal(childState.relay.ordinal, 3);
-  assert.equal(childState.relay.index, 3);
-  assert.equal(childState.relay.parentSessionId, thirdHop.parent.id);
-  assert.equal(childState.relay.childId, thirdHop.child.id);
-  assert.equal(childState.relay.path, thirdHop.result.path);
-
-  // 源会话：日志里是父记录（ordinal=1、有 path、scheme=history-n），投影照记录给。
-  const sourceState = await readState(stateDeps(), { agent: agentOf(source) });
-  assert.deepEqual(sourceState.chain, relayChainOf(sourceState.relay));
-  assert.equal(sourceState.chain.ordinal, 1);
-  assert.equal(sourceState.chain.scheme, 'history-n', '父记录写的新链 scheme 原样投影');
-  assert.equal(sourceState.chain.path, firstHop.result.path);
-  assert.equal(sourceState.relay.parentId, source.id);
+  assert.equal(tailState.relay.ordinal, 3);
+  assert.equal(tailState.relay.index, 3);
+  assert.equal(tailState.relay.parentSessionId, thirdHop.parent.id);
+  assert.equal(tailState.relay.childId, thirdHop.child.id);
+  assert.equal(tailState.relay.path, thirdHop.result.path);
 }
 
-console.log('PASS  0.5.0 F5 readState：chain 与 relay 同源下发（父/子记录都带 path、子记录带链号、旧字段不变）');
+// 6.3 中段会话（DCR-01 bug 原形）：chain=第 1 跳入站，next=第 2 跳出站。
+{
+  const midState = await readState(stateDeps({ archivedSessionIds: [source.id] }), { agent: agentOf(firstHop.child) });
+  assert.deepEqual(midState.chain, {
+    ordinal: 1,
+    baseTitle: CLEAN_TITLE,
+    parentId: source.id,
+    childId: firstHop.child.id,
+    scheme: 'history-n',
+    path: firstHop.result.path,
+  }, '祖先会话再次交接后，chain 仍是自己的入站记录（接力条不消失）');
+  assert.deepEqual(midState.next, {
+    ordinal: 2,
+    baseTitle: CLEAN_TITLE,
+    parentId: firstHop.child.id,
+    childId: secondHop.child.id,
+    scheme: 'history-n',
+    path: secondHop.result.path,
+  }, 'next 是最近一条出站记录（父→子入口的数据源）');
+  assert.equal(midState.relay.ordinal, 2, 'relay 仍是最近一条（出站），旧字段一个不改');
+  assert.equal(midState.parentArchived, true, 'parentArchived 用入站 parentId（source）');
+  const otherArchive = await readState(stateDeps({ archivedSessionIds: [secondHop.child.id] }), {
+    agent: agentOf(firstHop.child),
+  });
+  assert.equal(otherArchive.parentArchived, false, 'parentArchived 不被出站 childId（下一代）带偏');
+}
+
+// 6.4 根会话：只有出站记录 → chain=null（不显示接力条），relay/next 照常可读。
+{
+  const sourceState = await readState(stateDeps(), { agent: agentOf(source) });
+  assert.equal(sourceState.chain, null, '根会话没有入站记录 → chain=null');
+  assert.equal(sourceState.parentArchived, null, '没有 chain 就没有 parentArchived');
+  assert.equal(sourceState.relay.ordinal, 1, 'relay 旧字段仍可读（最近一条记录）');
+  assert.equal(sourceState.relay.path, firstHop.result.path);
+  assert.deepEqual(sourceState.next, {
+    ordinal: 1,
+    baseTitle: CLEAN_TITLE,
+    parentId: source.id,
+    childId: firstHop.child.id,
+    scheme: 'history-n',
+    path: firstHop.result.path,
+  }, 'next 接管原来「链字段」里的出站信息');
+  assert.deepEqual(sourceState.capabilities, { unarchive: false }, '宿主没有 unarchiveSession → false');
+}
+
+// 6.5 DCR-03：capabilities.unarchive 反映服务端 recover 接缝是否可用。
+{
+  const capable = await readState(stateDeps({ unarchive: true }), { agent: agentOf(source) });
+  assert.deepEqual(capable.capabilities, { unarchive: true }, '宿主有 workspaceRegistry.unarchiveSession → true');
+  const noRegistry = await readState(stateDeps(), { agent: agentOf(thirdHop.child) });
+  assert.deepEqual(noRegistry.capabilities, { unarchive: false }, '没有 registry → false（客户端隐藏恢复入口）');
+}
+
+console.log('PASS  0.5.1 DCR-01 readState：chain=本会话入站记录、next=出站投影、relay 旧字段不变、capabilities.unarchive');
+
+/* ================================================================== *
+ * 7) DCR-02：0.5.0 前的老链没有 record → 用会话头兜底合成只读 chain
+ *
+ * 条件（全部满足才合成）：header.parentSession 存在、origin!=='subagent'、
+ * isSeeded!==true（fork 继承前缀不算交接链）、标题能解析出「交接第 N 次」。
+ * 合成链只读：relay 仍是 null（不伪造旧字段）、不写日志、不带 path（客户端
+ * 用父会话的出站记录补 path）。
+ * ================================================================== */
+
+const LEGACY_CHILD_ID = 'session-legacy-child';
+const LEGACY_PARENT_ID = 'session-legacy-parent';
+
+/** 老链子会话：0.5.0 之前交接生成 —— 没有 relay record，只有会话头血缘 + 旧标题。 */
+function legacyChild({ header = { parentSession: LEGACY_PARENT_ID }, id = LEGACY_CHILD_ID } = {}) {
+  return new MockSession({
+    id,
+    cwd: undefined,
+    agentPreset: undefined,
+    header,
+    events: [{ type: 'user/message', data: { role: 'user', content: '旧的交接单正文' } }],
+  });
+}
+
+/* 7.1 正常老链：header.parentSession + 「交接第 N 次：」标题 → 合成 chain。 */
+{
+  const session = legacyChild();
+  const state = await readState(
+    stateDeps({ titles: new Map([[LEGACY_CHILD_ID, '交接第 2 次：老链标题']]), archivedSessionIds: [LEGACY_PARENT_ID] }),
+    { agent: agentOf(session) },
+  );
+  assert.deepEqual(
+    state.chain,
+    {
+      ordinal: 2,
+      baseTitle: '老链标题',
+      parentId: LEGACY_PARENT_ID,
+      childId: LEGACY_CHILD_ID,
+      scheme: 'handoff-n',
+      synthesized: true,
+    },
+    '老链兜底：序号/原题/父会话都从会话头 + 标题合成',
+  );
+  assert.equal('path' in state.chain, false, '合成链没有交接单路径（客户端向父会话读回）');
+  assert.equal(state.relay, null, '没有 record：relay 仍是 null（不伪造旧字段）');
+  assert.equal(state.next, null, '没有出站记录 → next=null');
+  assert.equal(state.parentArchived, true, 'parentArchived 用 header.parentSession 查归档集合');
+  assert.equal(state.parentArchived !== null, true, '兜底链也能判断归档状态（恢复入口不会死）');
+}
+
+/* 7.2 「历史 N：」标题的老链（record 丢了但标题是 0.5.0 新链形态）→ scheme=history-n。 */
+{
+  const session = legacyChild({ id: 'session-history-legacy' });
+  const state = await readState(
+    stateDeps({ titles: new Map([['session-history-legacy', '历史 3：新链标题']]) }),
+    { agent: agentOf(session) },
+  );
+  assert.deepEqual(state.chain, {
+    ordinal: 3,
+    baseTitle: '新链标题',
+    parentId: LEGACY_PARENT_ID,
+    childId: 'session-history-legacy',
+    scheme: 'history-n',
+    synthesized: true,
+  }, '「历史 N：」标题合成 history-n 链（接力条显示「历史 3：新链标题」）');
+}
+
+/* 7.3 不该合成的四种情况：subagent / fork(isSeeded) / 没有父会话 / 干净标题。 */
+{
+  const negatives = [
+    {
+      name: 'subagent 会话（origin=subagent）',
+      session: legacyChild({ header: { parentSession: LEGACY_PARENT_ID, origin: 'subagent' } }),
+      title: '交接第 1 次：X',
+    },
+    {
+      name: 'fork 会话（isSeeded=true，继承前缀不是交接链）',
+      session: legacyChild({ header: { parentSession: LEGACY_PARENT_ID, isSeeded: true } }),
+      title: '交接第 1 次：X',
+    },
+    {
+      name: '没有 header.parentSession',
+      session: legacyChild({ header: { cwd: '/tmp/x' } }),
+      title: '交接第 1 次：X',
+    },
+    {
+      name: '干净标题（handedOff=0，不是交接出来的会话）',
+      session: legacyChild(),
+      title: '普通会话标题',
+    },
+  ];
+  for (const item of negatives) {
+    const state = await readState(stateDeps({ titles: new Map([[item.session.id, item.title]]) }), {
+      agent: agentOf(item.session),
+    });
+    assert.equal(state.chain, null, `${item.name} 不应合成接力链`);
+    assert.equal(state.relay, null, `${item.name}：relay 保持 null`);
+  }
+  // 标题服务读不到（老宿主/未加载）→ 不猜，宁可不显示。
+  const noTitle = await readState(stateDeps(), { agent: agentOf(legacyChild()) });
+  assert.equal(noTitle.chain, null, '读不到标题时不合成（不猜链号）');
+}
+
+/* 7.4 有入站 record 时优先用 record（不合成、path 直接可用）。 */
+{
+  const session = new MockSession({
+    id: 'session-with-record-and-header',
+    cwd: undefined,
+    agentPreset: undefined,
+    header: { parentSession: 'header-parent' },
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '交接单' } },
+      {
+        type: RELAY_RECORD_TYPE,
+        ignorable: true,
+        data: { parentId: 'record-parent', childId: 'session-with-record-and-header', ordinal: 4, baseTitle: '记录原题', scheme: 'history-n', path: '/tmp/handoff-record.md', at: 1 },
+      },
+    ],
+  });
+  const state = await readState(stateDeps({ titles: new Map([[session.id, '交接第 9 次：标题里的原题']]) }), {
+    agent: agentOf(session),
+  });
+  assert.deepEqual(state.chain, {
+    ordinal: 4,
+    baseTitle: '记录原题',
+    parentId: 'record-parent',
+    childId: session.id,
+    scheme: 'history-n',
+    path: '/tmp/handoff-record.md',
+  }, '有 record 时以 record 为准（不合成、父会话取 record.parentId）');
+  assert.equal('synthesized' in state.chain, false, 'record 投影不带 synthesized 标记');
+}
+
+console.log('PASS  0.5.1 DCR-02 readState：老链 header 兜底合成 chain（排除 subagent/fork/干净标题，record 优先）');

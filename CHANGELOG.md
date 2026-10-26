@@ -1,5 +1,299 @@
 # Changelog
 
+## 0.5.1（2026-10-26 · 未发布，待 Lead 验收）
+
+> 分支 `fix/0.5.1`（从 `main` = 0.5.0 拉出，只带 0.5.x 需要的改动；0.6 的 timeline/marks/milestone
+> 不进来）。**四批功能合并定稿 + 1 条设计修正**：批 1 核心 bug（DCR-01/02/03/04 + D01 + D03）、
+> 批 2 交互（pin 失效标注 / 原生压缩保护 / 置顶保护 / 归档开关）、批 3 功能补全（完整交接链 /
+> 父→子入口）、批 4 完整链在祖先未加载时只显示 1 层（DCR-05）、**设计定稿：环只表达容量
+> （pin 位置标记归 0.6 时间线）**。
+> 测试 **257 → 340 PASS**，bundle 重建且 `--check` 通过。
+>
+> **契约变化（全部 additive，老客户端忽略新字段即可）**：`readState` 增 `chain`（入站投影）/
+> `next`（出站投影）/ `nextArchived` / `parentArchived` / `capabilities.unarchive` /
+> `sessionPinned` / `pins.stale` / `pins.atRisk`；`handoff` 增 `archive` / `confirmUnpin` 两个
+> 入参（默认值保持 0.5.0 行为）；`relay` 旧字段一个字节不改。
+>
+> **降级说明**：宿主缺 `workspaceRegistry`（归档/置顶/`unarchive` 任一）时对应能力一律降级为
+> 「不知道 / 不归档 / 隐藏入口」并只 warn，不阻断交接；老插件（0.5.0）没有 `next` 字段时父→子
+> 入口不显示；原生压缩预判依赖宿主 `retainRatio` 默认值，文案统一写「预计」，实际损失由
+> `pins.stale` 兜底。
+
+### 批 1：核心 bug 修复（DCR-01 / DCR-02 / DCR-03 / DCR-04 / D01 / D03；测试 257 → 278）
+
+#### DCR-01（P1）祖先会话再次交接后接力条消失
+
+- `dsh/relay.js` 新增 `relayInboundRecordOf` / `relayOutboundRecordOf`（按 `childId` 与 `session.id` 的关系分开找）；`relayRecordOf` 语义**不变**（仍是最近一条记录，`handoffTitlePlanOf` 的链号递增依赖它）。
+- `actions/state.js`：`chain` 改为**本会话入站记录**（`childId === session.id`）的只读投影；旧字段 `relay` 一个字节不改；`parentArchived` 用入站 `parentId` 查归档集合（出站记录里的父会话是本会话自己，会查错）；新增 `next`（最近一条出站记录的投影，只加不改，供后续父→子入口与「子会话向父会话补交接单 path」）。
+- 客户端 `client/35-relay-bar.js` 的入站判定（`chain.childId === sessionId`）保持不变；`loadParentPath` 改用父会话状态里的 `next`（老插件没有 `next` → 回落 `chain`）。
+- 回归：`test/relay-chain.mjs`（中段会话：入站在前、出站在后）、`test/state-passive.mjs`（只有出站记录的会话 + 入站/出站读取器单测）。
+
+#### DCR-02（P1）0.5.0 之前的老链永远没有接力条
+
+- `dsh/relay.js` 新增 `legacyRelayChainOf({session, title})`：没有入站记录时，若 `header.parentSession` 存在、`header.origin !== 'subagent'`、`header.isSeeded !== true`（宿主语义：`isSeeded` = fork 继承前缀，不是交接），且标题能解析出链号（`splitHandoffTitle(...).handedOff > 0`），合成只读 chain（`ordinal` / `baseTitle` / `scheme` / `childId=self` / `parentId=header.parentSession`，多一个 `synthesized:true`）。**不写日志、不改任何记录**；不带 `path`（老链的交接单路径只写在父会话记录里，客户端 `loadParentPath` 只读回查）。
+- 回归：`test/relay-chain.mjs`（老链合成 / 「历史 N」标题 / 四种不合成：subagent、fork、无 `parentSession`、干净标题 / 有 record 时 record 优先）。
+
+#### DCR-03（P2）归档状态不刷新 / `parentArchived=null` 死入口
+
+- 客户端 `client/35-relay-bar.js`：
+  - 打开接力条菜单时**静默刷新一次 state**（`refreshKey` 触发；只有真的换会话才清链，刷新失败不重排队重试）；
+  - `parentArchived === null`（宿主没给状态）时，「回到原会话」也先 `unarchive` 再 `open`（unarchive 幂等）；
+  - 恢复失败会**换通道重试一轮**（宿主 `ctx.uiWorkspace.unarchiveSession` ⇄ 插件 HTTP `recover`；只有一条通道时同通道重试），仍失败才提示；
+  - 客户端与服务端都没有恢复能力时**隐藏「恢复旧会话」**。
+- `actions/state.js` 新增 `capabilities.unarchive`（宿主有没有 `workspaceRegistry.unarchiveSession`）。
+- 回归：`test/relay-bar.mjs`（打开菜单刷 state / 未知状态先恢复 / 双通道重试 / 同通道重试 / 无能力隐藏入口 / `next` 补 path）、`test/state-passive.mjs` 与 `test/relay-chain.mjs`（capabilities）。
+
+#### DCR-04（P2）归档提示文案指向不存在的视图
+
+- `dsh/handoff-archive.js`：`「全部会话」` → 宿主真实视图标签 `「全部对话（显示已归档）」` + 真实动作 `「取消归档」`（实测 `dsh-client-ui-workspace` 的 `viewOptions` 三选一与归档行动作）。
+- 回归：`test/archive.mjs`（新文案存在、不再出现「全部会话」）。
+
+#### D01（正确性）压缩「已提交」判定两份不一致
+
+- `dsh/compaction-pair.js` 新增唯一判定 `isCommittedCompaction({compactionId, end, replace})`：**没有 `compactionId` 的旧日志也要求 replace**；有 id 时还要求同 id 的 `compaction/end` 存在且没有 `error`。
+- `dsh/session-view.js` 的 `countSummaries` 与 `dsh/compaction-log.js` 的 `collectCompactions().committed` 都改为调用它（原来两份实现，在「无 id 且无 replace」的旧日志上给出 `1` / `false` 两个答案）。
+- **行为变化**：没有 id、也没有 replace 的 summary 不再算「已压缩」（`readState.summaries` 与 advice 阈值会少算这一条）。`test/smoke.mjs` 两处旧期望随之更新。
+- **未随本分支做**：0.6 的 `timeline.summaryCount` 改正向累计 —— 0.5.1 分支没有 `lib/dsh/timeline.js`，随 0.6 分支做。
+- 回归：`test/compact-log.mjs`（countSummaries 与 committed 同口径交叉校验）。
+
+#### D03（重复）文本截断 6 处 → 2 个共享函数
+
+- 新增 `lib/core/clip.js`：`clipChars`（按码点，emoji 不切半）与 `clipCodeUnits`（按 UTF-16 码元，0.4/0.5 既有行为逐字节兼容）；省略号预算显式命名（`'inside'` 默认 = 算进上限 / `'append'` = 多 1 字符 / `false` = 不补）。
+- 0.5.1 迁移 6 处：`core/pin-anchors.js`（60 字摘要）、`dsh/compaction-log.js`（200 字预览，`'append'` 保留「多 1 字符」既有输出）、`dsh/diagnostics.js`、`dsh/diag-counters.js`、`core/errors.js`（140 字原因）、`actions/handoff.js`（120 字警示）。
+- **随 0.6 做**：`core/handoff-facts.js:oneLineNote`、`core/milestone.js:clipText`（0.6 工作树新增的两份逐行相同实现）→ 换 `clipChars`。`core/relay.js:truncateTitleUtf8` 按评审结论**不并进来**（UTF-8 字节预算 = 宿主 `session-title` 契约克隆，0.5.2 S3 再迁 `dsh/title-budget.js`）。
+- 回归：新增 `test/clip.mjs`（码点/码元/append/边界 + 三个迁移点逐字节），已加入 `npm test`。
+
+### 批 2：pin 失效标注 + 原生压缩保护 + 归档交互（测试 278 → 311）
+
+#### 1. pin 失效标注（C 方案，DCR 批 2-3）
+
+- `core/pin-health.js`（新增）：`pinHealthOf({pinnedSeqs, surfaceSeqs, log})` 把 pin 快照拆成
+  `live`（仍在 surface）与 `stale`（被压缩/历史变化带走），并只读日志归因：
+  `compaction/start.turn` 非空 = **native**（原生自动压缩）；`turn:null` = **other**（本插件 /bc、
+  宿主 /compact）；找不到覆盖该 seq 的 replace = **unknown**（撤销/分支）。`staleCauseTextOf`
+  统一文案口径。
+- `actions/state.js`：`pins` 增加 additive 字段
+  `stale:{count,seqs,native,other,unknown}`；`pins.count/seqs/marks` 仍是 live 集合（0.5.0
+  语义不变，老客户端照用）。失效 pin **不画到环上**（不假装还在），但也不消失。
+- 客户端 `client/30-indicator.js`：指示灯悬停卡显示「已失效 N 条（随原生压缩移除）」；菜单的
+  锁定项显示「已锁 N 条 · 失效 M」/「解除失效锁定（M 条）」；`data-cr-pins-stale` 取证属性。
+- `actions/pin.js` 的 `togglePin` 改为按**快照**判定：全部 pin 已失效时菜单显示「解除失效锁定」，
+  点下去必须清空记录，不能因为 live=0 反而新锁一条（P3-03 的旧结论随菜单文案一起更新）。
+- 回归：`test/pin-health.mjs`（live/stale/三种原因/混合原因 + state 下发）、`test/relay-bar.mjs`
+  （指示灯悬停卡文案）。
+
+#### 2. 原生压缩吃掉 pin 的提前保护（事前，非事后）
+
+- 宿主可用信号：`compaction-basic` 的 `thresholdRatio` / `headroomTokens` / `retainRatio` /
+  `retainTokens` 可读；真实触发线（0.4 P2-3）与当前压力每帧都有；选段算法在宿主源码里是
+  纯函数（保留尾部 `retainTokens` + 工具配对平衡回退）。
+- `dsh/native-compaction.js`：`parseCompactionOverride` / `parseModelPolicies` /
+  `resolveNativePolicy` 增加 `retainRatio` / `retainTokens`（只认 config 直属子键；路由级可覆盖）。
+- `core/native-pin-risk.js`（新增）：`nativePinnedRiskOf` 按 compaction-basic 的
+  `selectCompactableRange` 同口径复刻选段，返回下一次原生压缩会覆盖的 pinned seq。
+- `actions/state.js`：只在「原生自动压缩开 + 当前压力 ≥ 真实触发线 + 节点定价与 surface 对齐」
+  时下发 `pins.atRisk:{count,seqs}`（否则 null，不制造噪音）。
+- 客户端：悬停卡一行「⚠ 原生压缩预计覆盖 N 条锁定消息」+ 菜单交接项提示 + 同一风险签名只弹
+  一次 toast，建议「先交接（/handoff）或解锁」。`data-cr-pins-risk` 取证属性。
+- **为什么是事前**：触发线、保留预算、当前压力都是可读的，选段是纯函数；无需等压缩事件。
+  **限制**：宿主没有「即将压缩」事件，真正执行在 step boundary，且默认 `retainRatio` 随宿主
+  版本（0.2.1-rc.3 = 0.16；用户显式配置优先），所以文案写「预计」。真发生后 `pins.stale`
+  仍会兜底标出实际损失。
+- 回归：`test/pin-health.mjs`（宿主选段同口径：保留尾部/配对平衡回退/system head/未到线不报
+  + retainRatio/retainTokens 解析）、`test/relay-bar.mjs`（预警文案与主动提示）。
+
+#### 3. 置顶保护（归档会取消置顶）
+
+- 宿主实证（`@deepseek-ai/dsh-workspace/lib/index.js`）：`WorkspaceRegistry.pinnedSessionIds`
+  可读；`archiveSession` 在**同一次 durable write** 里把该 id 从置顶集合移除（置顶与归档互斥）。
+- `dsh/handoff-archive.js`：新增 `pinnedSessionIdsOf` / `isSessionPinned`（读不到 → null，不猜
+  false）；`handoffArchiveNoteOf` 增加 `skipped` / `pinned` 文案。
+- `actions/handoff.js`：`handoff(..., {archive = true, confirmUnpin = false})`。旧会话在侧栏置顶
+  且未 `confirmUnpin:true` 时**不归档**（`status:'pinned'`），旧会话与置顶都保留；旧客户端
+  （不传 confirmUnpin）自动降级为不归档，不会静默取消置顶。
+- 客户端交接预览：`sessionPinned === true` 时弹「旧会话已在侧栏置顶：归档会取消置顶」，提供
+  「交接并归档（取消置顶）」与「只交接，保留置顶」两个出口；取消 = 关闭预览、什么都不做。
+- `actions/state.js` 新增 `sessionPinned`（true/false/null）。
+- 回归：`test/archive.mjs`（置顶未确认不归档 / 确认才归档 / archive:false 优先 / 读不到置顶
+  集合 → null / 文案）、`test/relay-bar.mjs`（两个出口的 HTTP body）。
+
+#### 4. 归档开关 + 首次引导
+
+- `handoff` 新增可选 `archive`（默认 `true`，0.5.0 行为不变）；HTTP
+  `/api/compact-relay-action {action:'handoff', archive:false}` = 只交接、不归档旧会话（返回
+  `archive.status='skipped'` + 文案）；`archive` / `confirmUnpin` 类型错 → 400（动历史前拒绝）。
+- 交接预览新增勾选框「交接后自动归档旧会话（默认开）」；取消勾选后不弹置顶确认、确认按钮变
+  「确认交接（不归档）」。
+- 首次引导（onboarding）文案明确写：「交接后会默认自动归档旧会话（侧栏收起，可取消勾选
+  『交接后归档』；旧会话在侧栏置顶时会先问你，因为归档会取消置顶）」。
+- 回归：`test/archive.mjs`（archive:false / 默认 true / HTTP 透传与 400）、`test/relay-bar.mjs`
+  （勾选状态与请求体）、`test/archive.mjs` 产物守卫（onboarding 文案）。
+
+#### 批 2 的宿主限制 / 待真机验证
+
+- 原生压缩预判是「同口径复刻 + 估算」，依赖宿主 0.2.1-rc.3 的默认 `retainRatio=0.16`；宿主升级
+  改默认值时预判会偏（用户显式配置 retainRatio/retainTokens 不受影响）。文案已写「预计」，
+  实际损失由 `pins.stale` 兜底。
+- 置顶状态读的是 workspace registry 的全局置顶集合；老宿主没有该字段 → `sessionPinned=null`，
+  客户端不弹确认、服务端也不拦（`isSessionPinned` 返回 null → 按未置顶处理，保持 0.5.0 自动归档）。
+- 客户端新增交互（归档勾选 / 置顶确认 / 失效标注 / 预警 toast）需要重启宿主加载新 bundle 后
+  真机点一遍；本轮只做了 bundle 重建 + 组件级单测（mini React，不引 jsdom）。
+
+### 批 3：完整交接链 + 父→子入口（测试 311 → 324）
+
+#### 1. 完整交接链列表（接力条下拉「完整交接链」）
+
+- **数据**：当前会话 `readState.chain`（入站；0.5.0 之前的老链走 DCR-02 的 `synthesized` 兜底）→
+  逐级向 `chain.parentId` 读父会话 state 的 `chain`，直到没有 `parentId`。
+- **频率**：按需——点「完整交接链」之前**不预加载**祖先；展开后**每层一次** state GET（串行、
+  不并发、不轮询）。链路读完后不常驻任何定时器。
+- **上限/去重**：`MAX_CHAIN_HOPS = 8`；`seen` 按 sessionId 去重 → 自指/成环立刻停；到上限时
+  界面明说「只显示最近 8 层」（不假装到头）。
+- **每行**：「历史 N：<原名>」（旧链沿用「交接第 N 次：<原名>」，与接力条同一把尺子）+ 行内
+  「交接单」入口 + 整行点击跳转。N/原名取「下一层（子）会话的入站 chain」——正好是那一层会话
+  改名后的标题。
+- **行内交接单**：优先用该层记录里的 `path`；旧记录没写 path 时用该层会话 state 的出站
+  `next.path`（`childId` 与链号都对得上才采用）。只认 `handoff-*.md` basename，走已有
+  `/api/compact-relay-handoffs?file=`；没有 path 时禁用并标「暂无交接单」。
+- **跳转**：`ctx.uiWorkspace.openSession(sessionId)`。祖先会话默认已被交接流程归档，所以与
+  「回到原会话」同口径：先 `unarchive`（宿主 API，老宿主退回 HTTP `recover`，幂等）再 open。
+- **失败/读不到**：停在断点，已读到的行保留，显示「无法读取更早的链路」+「重试」；重试
+  **从断点续读**（已读到的层不重复拉）。「← 返回」回主菜单 —— 链读失败不阻断其他入口。
+- **「没加载」不等于「到头」**：宿主返回的 `sessionId` 对不上（重启后祖先会话通常不在内存里）
+  按「读不到」处理——停在断点 + 重试，而不是静默少列一层；用户先打开那个会话再重试就能续上。
+- 回归：`test/relay-bar.mjs` 新增 8 组（按需/每层一次 GET、8 跳上限、成环去重、失败重试续读、
+  未加载也不误判到头、行内交接单 basename、无 path 禁用、行点击先恢复再切）。
+
+#### 2. 父→子入口（TD-01）
+
+- `actions/state.js` 新增 additive 字段 `nextArchived`（`next.childId` 是否在 workspace 归档
+  集合里；与 `parentArchived` 完全对称，各查各的 id，读不到 → null）。
+- 父会话侧（有出站记录时）**也渲染接力条**：一行「已交接给新会话」+ 菜单「去新会话」；
+  中段会话同时有「回到原会话」与「去新会话」两个方向，外加「完整交接链」。
+- 点击 → `openSession(next.childId)`；`nextArchived` 为 true 或未知（null）且宿主有恢复能力时
+  先 unarchive 再 open（复用批 1 的双通道恢复逻辑）。
+- 两个防御：老插件没有 `next` 字段 → 不显示「去新会话」（**不回落** `chain`：老形态的 chain
+  是最近一条记录，可能是入站，回落会出现「跳回自己」的死入口）；`next.childId === 本会话`
+  的脏记录一律不认。
+- 回归：`test/relay-bar.mjs` 新增 4 组（父会话侧渲染与跳转、脏 next 不显示、归档/未知先恢复、
+  中段会话两个方向）+ `test/state-passive.mjs`（`nextArchived`：在/不在归档集合、只看出站 id、
+  无 registry、无 next → null）。
+
+### 批 4：完整交接链在祖先未加载时只显示 1 层（DCR-05；测试 324 → 339）
+
+- **真机现象**：点接力条「完整交接链」只显示 1 层（当前会话），并提示「无法读取更早的链路」。
+- **根因**：客户端逐级 GET `/api/compact-relay-state?sessionId=<parentId>`；宿主对**未加载**的
+  会话返回 `sessionId:null`（`readState` 的 `target` 为 null），客户端把它当「读不到」停在断点。
+  重启后祖先会话通常都不在内存里，所以这是常态而不是异常。
+- **宿主能力实证**（DSH 0.2.1-rc.3 app.asar）：
+  - `@deepseek-ai/dsh-session-persistence` 是根服务 `ctx.sessionPersistence`；
+  - `stat(id)` → `{header, revision, sizeBytes?}`，**不读事件日志**；
+  - `open(id, 'read')` → 只读 `SessionHandle`，`read()` 返回 `{events, eventState}`，`close()`
+    释放；**不创建 live Session、不写任何状态、不占写锁**；
+  - JSONL 后端对**已归档**会话同样可读（归档只改 Workspace registry 集合，不动持久化文件）。
+- **方案**：优先方案成立 —— 新增服务端只读读取器 `dsh/relay-chain.js`：
+  - `readRelayChain(ctx, {sessionId})` 从当前会话开始，按「子会话入站 relay 记录」逐层向上
+    （与旧客户端同一套语义），最多 8 层、`seen` 去重防成环；
+  - 每层优先用 live 会话（内存里最新），未加载则 `stat` 读 header + `open(id,'read')` 读日志；
+  - 交接单 path 优先用该跳入站记录，缺了再从父会话日志找 `childId+ordinal` 对得上的出站记录
+    （0.3/0.4 老记录只在父会话写 path）；
+  - 0.5.0 前没有 relay 记录的老链同样逐层用 `header.parentSession` + `session/title` 兜底合成；
+  - 某一层读不到时返回**已读到的行** + `unreadable:{sessionId, reason}`，不整块清空。
+- **端点**：`actions/relay-chain.js`（薄包装）+ `GET /api/compact-relay-chain?sessionId=`；
+  与其它 GET 端点同一套宿主 `connection.requestRejection` 鉴权/同源口径。一次返回整条链，
+  彻底消除逐级 GET 和未加载问题。
+- **客户端**：
+  - 点「完整交接链」先打整链端点，一次渲染（`test/relay-bar.mjs` 断言祖先 state GET = 0）；
+  - 老插件/响应异常 → **回落**原有逐级 state 读法（兼容 + 兜底），行为与 0.5.1 批 3 一致；
+  - 兜底断点从「错误提示」改成可操作入口：宿主明确回 `sessionId:null` 时显示
+    **「上一层会话未打开」+「打开并继续」**；点击先双通道 `unarchive`（复用 DCR-03，幂等；
+    无归档记录也直接继续）→ `openSession(parentId)` → 等宿主加载（≤8 次）→ **自动 `loadChain` 续读**；
+    加载不上则提示「已打开上一层会话，再点完整交接链继续」；
+  - 整链端点 `unreadable.reason==='not-found'`（持久化里根本没有这一层）**不显示**「打开并继续」
+    （打开也救不回来），只保留重试——与 DCR-03「不造必然失败的入口」同口径。
+- **保留**：读不到时已读行不丢、返回主菜单不受影响、8 跳上限、sessionId 去重、行内交接单
+  basename 校验、每行跳转前先 unarchive。
+- **回归**：新增 `test/relay-chain-endpoint.mjs`（12 条：祖先全未加载仍读全 / live 优先 /
+  8 跳上限 / 成环去重 / 断点保留 / 无持久化 / 老链 header+标题兜底 / subagent+fork 不合成 /
+  HTTP 200+400+405 / 无服务 ok:false / 鉴权 401）；`test/relay-bar.mjs` 新增 3 条（未加载
+  入口、点击后 unarchive+openSession+自动续读、整链端点一次读全 + 部分失败入口），共 46 条。
+
+### 设计定稿：环只表达容量（pin 位置标记归 0.6 时间线）
+
+- **决策（用户拍板）**：环管「未来」（容量、阈值、断点、原生线刻度）；pin 的位置是「历史」。
+  在环上画锁定消息位置属于复现历史功能，而 0.6 的时间线会承接 pin 历史（`state.pins.marks`
+  与 marks/timeline 已备好）。所以 0.5.1 起**环只表达容量，不再画 pin 位置块**；
+  「已锁定 N 条 / 已失效 M 条」作为状态保留在悬停卡与菜单。
+- **客户端** `lib/client/30-indicator.js`：删除环上的 pin 位置块渲染（`pinBlocks` 那组带
+  `data-cr-pin-mark` 的 `circle`，含品红弧段）；环 SVG 只剩分段弧/断点/原生线刻度/交接线警示/
+  中心点。**`state.pins.marks` 数据读取保留**（状态归一化照旧，0.6 时间线消费），注释写明
+  「位置标记归 0.6 时间线，环不再画」。
+- **保留不动**：悬停卡「已锁定 N 条 / 已失效 M 条」、菜单「已锁 N 条 · 失效 M」、
+  `data-cr-pins` / `data-cr-pins-stale` / `data-cr-pin-stale` 取证属性；`colors.base.pin`
+  （锁定颜色）留在设置与 colors 契约里，作为 0.6 时间线的 pin 标记颜色。
+- **清点**：`data-cr-pin-mark` 此前只被指示灯使用（设置页教学图本来就不画 pin，演示段无引用）；
+  删除后源码与 bundle 全库无残留。
+- **回归**：`test/relay-bar.mjs` 新增「有 pin 也不画位置块」+ 悬停卡/菜单计数仍在；
+  `test/archive.mjs` 产物守卫改为「源码/bundle 不得含 `data-cr-pin-mark`，但必须保留 `marks`
+  读取与 0.6 时间线注释」。测试 **339 → 340 PASS**。
+
+### 文档
+
+- **ARCHITECTURE**：`readState` 契约补 `chain`（入站）/ `next`（出站）/ `nextArchived` /
+  `capabilities.unarchive` / `pins.stale` / `pins.atRisk` / `sessionPinned` / `parentArchived`；
+  §8.8 读侧补「两侧都渲染」口径；§8.10（完整交接链的逐级读法、上限/去重/断点重试、
+  父→子入口的两个防御）；新增 §8.11（DCR-05：服务端只读持久化日志一次读整链、端点契约、
+  客户端回落与「打开并继续」）；新增 §8.12（设计定稿：环只表达容量、`pins.marks` 数据面保留、
+  测试/产物守卫）；§5 补**帧体积口径**（实测 ≈ 2.1KB/帧，0.5.1 additive ≈ +300B，
+  完整链默认 **1 次** `/api/compact-relay-chain`，老宿主回落 ≤ 8 次 GET）。
+- **README / TUTORIAL**：补 0.5.1 用法（接力条「完整交接链」、父→子「去新会话」、pin 失效
+  标注、交接时的置顶确认、交接后归档开关）；指示环图例与锁定说明去掉「品红色块」，
+  统一成「环只表达容量，pin 位置标记归 0.6 时间线；已锁定/失效条数看悬停卡与菜单」
+  （README.en 同步）。
+- 口径与已知限制见下节。
+
+### 已知限制与口径（0.5.1 定稿）
+
+- **DL-02（置顶丢失）**：宿主 `archiveSession` 在**同一次 durable write** 里把该会话从置顶
+  集合移除（置顶与归档互斥），这是宿主行为、不是插件副作用。0.5.1 起这件事不再静默：交接
+  预览在会话置顶时先问一次（「交接并归档（取消置顶）」/「只交接，保留置顶」），服务端在没拿
+  到 `confirmUnpin:true` 时**拒绝自动归档**（`status:'pinned'`，旧会话与置顶都保留）；旧客户端
+  （不传 confirmUnpin）在置顶会话上自动降级为不归档。**边界**：用户在侧栏手动归档置顶会话时，
+  那一步的确认归宿主管辖，本插件不介入。
+- **DL-03（分叉未定义）**：fork（宿主 `isSeeded=true`）与 subagent 会话不在接力链语义里，
+  老链兜底（DCR-02）明确排除这两类。真正的「分叉 → 各走一条链 → 再合并」**没有定义**：链记录
+  只存单亲 `parentId`，没有分支判据，插件按「各聊各的」处理（两条分叉各自成链，互不感知）。
+  0.6 再谈（需要宿主的血缘/分支信号）。
+- **DL-04（有 pin 时程序段变化）**：九段交接单里「当前进度」「改过的文件」两段由**程序收集**
+  （`core/handoff-facts.js`）；有 pin 时「当前进度」会多出「锁定消息 N 条」+ 最多 10 条锚点
+  （seq + 角色 + ≤60 字摘要）。所以同一会话在不同 pin 状态下重新生成交接单，**程序段内容会变**，
+  不保证与上一次逐字节相同（模型段本来也不保证）。这是有意的：交接单要反映交接那一刻的事实。
+  0.5.1 批 2 起只统计**还活着**的 pin（被压缩带走的失效 pin 不进交接单，改在指示灯界面标注）。
+- **「去新会话」只指向最近一次出站**：`readState.next` 是**最近一条**出站记录，所以同一条会话
+  交接过两次时，更早的那个下一代会从「去新会话」里消失（会话本身还在，侧栏能找到）；这是
+  `next` 的语义决定的，跨会话全时间线留到 0.6 的「路线图」面板。
+- **旧链兜底无 path**：0.5.0 之前的老链（子会话没有 relay record）由 `legacyRelayChainOf` 用
+  会话头 + 标题合成**只读**链，**不带 path**（老链的交接单路径只写在父会话记录里）。客户端缺
+  path 时会向父会话只读回查一次，仍拿不到就显示「暂无交接单」并禁用入口——不伪造、不猜路径。
+  完整交接链同理：某一层没有记录路径时，那一行的「交接单」禁用，但跳转照常可用。
+- **整链端点依赖 `ctx.sessionPersistence`**：没有该服务的宿主（老版本/裁剪构建）回落旧的逐级
+  state 读法；此时祖先未加载会停在断点并显示「上一层会话未打开」+「打开并继续」，不再只给
+  错误提示。
+
+### 验证
+
+- `npm test` 全绿：**339 PASS / 0 FAIL**（历史基线：0.5.0 收尾 257 → 批 1 278 → 批 2 311 →
+  批 3 324 → 批 4 **339**；批 4 新增 15 条：12 条整链服务端/端点测试 + 3 组接力条组件测试）；
+  `node scripts/build-client.mjs --check` 通过（bundle 279147 字节）。
+- 四批合计新增回归：DCR-01/02/03/04、D01、D03（批 1）、pin 失效/原生压缩预判/置顶/归档开关
+  （批 2）、完整交接链/父→子（批 3）、整链端点/未加载「打开并继续」（批 4），以及
+  `test/clip.mjs`、`test/pin-health.mjs`、`test/relay-chain-endpoint.mjs` 三个新文件。
+- **未 commit、未发布、未打 tag**（按范围定稿：发布前须 Lead 验收）。
+- **待真机验证**：① 旧链会话（b3ae4bac 等 4 个）打开后有接力条；② 祖先会话再次交接后接力条
+  不消失；③ 置顶会话交接时的确认弹层；④ 完整交接链：重启后祖先**未加载**时也能一次列全（新
+  `/api/compact-relay-chain`），以及老宿主断点「打开并继续」→ 自动续读；⑤ 父会话侧「去新会话」。
+  本轮只做组件级单测（mini React）+ 服务端单测，没有真机截图。
+
 ## 0.5.0（2026-10-26）
 
 > 0.5.0 功能批次：地基 F1–F6 + **命名反转 + 接力条 + 交接后自动归档旧会话/恢复入口**。双向跳转的「父会话 → 子会话」入口与里程碑面板尚未实现；其余已提交并发布（2026-10-26）。

@@ -35,12 +35,15 @@ function faultError(failAppendError, callIndex, type) {
 
 /** count 从 1 开始；返回 injection 句柄，可用于契约测试里显式检查计数。 */
 export class MockSession {
-  constructor({ id = 'mock-session', cwd = '/tmp/relay-test-ws', agentPreset = 'preset-x', events = [], failAppendOn, failAppendError } = {}) {
+  constructor({ id = 'mock-session', cwd = '/tmp/relay-test-ws', agentPreset = 'preset-x', header, events = [], failAppendOn, failAppendError } = {}) {
     this.id = id;
     // handoff 的 M6 现场快照依赖 header.cwd；传 undefined 表示「这个会话没有该字段」。
+    // 0.5.1 DCR-02：老链兜底要读宿主会话头的血缘字段（parentSession / isSeeded / origin），
+    // 夹具用 `header` 显式补（和 DSH 的 SessionHeader 同名字段）。
     this.header = {
       ...(cwd === undefined ? {} : { cwd }),
       ...(agentPreset === undefined ? {} : { agentPreset }),
+      ...(header === null || typeof header !== 'object' ? {} : header),
     };
     this.log = [];
     this.surface = { nodes: [], replaceGeneration: 0 };

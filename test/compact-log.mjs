@@ -3,6 +3,7 @@
  */
 import assert from 'node:assert/strict';
 import { collectCompactions, latestCompaction } from '../lib/dsh/compaction-log.js';
+import { countSummaries } from '../lib/dsh/session-view.js';
 import { readCompactDiffs } from '../lib/actions/compact-diff.js';
 
 const longSummary = '第一段结论。\n\n第二段包含大量细节：' + '细节'.repeat(160);
@@ -78,6 +79,61 @@ assert.equal(committed.previewTruncated, true, '超长摘要要标记截断');
 assert.equal(committed.preview.length <= 201, true, '预览最多 200 字 + 省略号');
 assert.equal(committed.preview.startsWith('第一段结论。'), true);
 
+/* ------------------------------------------------------------------ *
+ * D01（0.5.1）：压缩「已提交」判定两份实现必须同口径
+ *
+ * 旧实现：session-view.countSummaries 对**没有 compactionId** 的 summary 直接 +1
+ * （不看 replace）；compaction-log.committed 对所有 summary 都要求 replace。
+ * 同一份日志会得到「countSummaries=1 / committed=false」两个答案（幽灵压缩）。
+ * 0.5.1 起两边共用 compaction-pair.isCommittedCompaction：无 id 也要求 replace。
+ * ------------------------------------------------------------------ */
+
+{
+  // 无 compactionId、无 replace：两边都必须算「未提交」。
+  const ghostLegacy = {
+    id: 'session-ghost-legacy',
+    log: [
+      { seq: 0, type: 'compaction/summary', data: { summary: '旧日志但没有 replace' } },
+      { seq: 1, type: 'compaction/end', data: {} },
+    ],
+  };
+  assert.equal(countSummaries(ghostLegacy), 0, '无 id 且无 replace 的 summary 不算已压缩（与 compiled-log 同口径）');
+  assert.equal(collectCompactions(ghostLegacy)[0].committed, false, 'committed 同样要求 replace');
+
+  // 无 compactionId、有 replace：旧日志仍然算「已提交」（两边都是 1 / true）。
+  const legacyCommitted = {
+    id: 'session-legacy-committed',
+    log: [
+      { seq: 0, type: 'compaction/summary', data: { summary: '旧日志摘要' } },
+      { seq: 1, type: 'user/message', data: { role: 'user' }, sourceEventSeqs: [0] },
+    ],
+  };
+  assert.equal(countSummaries(legacyCommitted), 1, '旧日志有 replace 仍算已提交（兼容）');
+  assert.equal(collectCompactions(legacyCommitted)[0].committed, true);
+
+  // 有 id、有 replace、end 带 error：两边都必须算未提交（失败事务的幽灵摘要）。
+  const ghostFailed = {
+    id: 'session-ghost-failed',
+    log: [
+      { seq: 0, type: 'compaction/summary', data: { compactionId: 'z', summary: '失败事务' } },
+      { seq: 1, type: 'user/message', data: { role: 'user' }, sourceEventSeqs: [0] },
+      { seq: 2, type: 'compaction/end', data: { compactionId: 'z', error: { name: 'Error', message: 'boom' } } },
+    ],
+  };
+  assert.equal(countSummaries(ghostFailed), 0);
+  assert.equal(collectCompactions(ghostFailed)[0].committed, false);
+
+  // 主夹具交叉校验：countSummaries 必须等于 collectCompactions 里 committed=true 的条数。
+  for (const probe of [session, ghostLegacy, legacyCommitted, ghostFailed]) {
+    const committedCount = collectCompactions(probe, { limit: 999 }).filter((item) => item.committed).length;
+    assert.equal(
+      countSummaries(probe),
+      committedCount,
+      `countSummaries 与 collectCompactions 必须同口径（${probe.id}）`,
+    );
+  }
+}
+
 // limit / 参数裁剪
 const two = collectCompactions(session, { limit: 2 });
 assert.deepEqual(two.map((item) => item.seq), [60, 50]);
@@ -114,6 +170,7 @@ const blockItem = collectCompactions(blockSession)[0];
 assert.equal(blockItem.committed, true);
 assert.equal(blockItem.preview, '## 目标 块格式摘要第一段 第二块内容', '真实块数组摘要要能归一成预览');
 assert.equal(blockItem.previewTruncated, false);
+assert.equal(countSummaries(blockSession), 1, '真实块数组形状也要与 countSummaries 同口径');
 
 // actions 层：有 agent / 无 agent
 const deps = { ctx: { agents: { get: (id) => (id === session.id ? { id, session } : undefined), list: () => [] } } };
@@ -129,3 +186,4 @@ assert.throws(
 );
 
 console.log('PASS  A6 压缩历史：配对/提交口径/失败与未闭合/预览截断/actions');
+console.log('PASS  0.5.1 D01：countSummaries 与 collectCompactions 同口径（无 compactionId 也要求 replace）');

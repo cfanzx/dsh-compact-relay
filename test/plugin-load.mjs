@@ -110,6 +110,7 @@ assert.deepEqual(
   host.routes.map((route) => route.path).sort(),
   [
     '/api/compact-relay-action',
+    '/api/compact-relay-chain',
     '/api/compact-relay-diagnostics',
     '/api/compact-relay-diff',
     '/api/compact-relay-handoffs',
@@ -372,6 +373,7 @@ assert.equal(diagPost.status, 405, '诊断端点只读：非 GET 必须 405');
 host.setConnectionRejection(401);
 const authCases = [
   ['/api/compact-relay-state', { method: 'GET' }],
+  ['/api/compact-relay-chain', { method: 'GET' }],
   ['/api/compact-relay-handoffs', { method: 'GET' }],
   ['/api/compact-relay-settings', { method: 'GET' }],
   ['/api/compact-relay-diagnostics', { method: 'GET' }],

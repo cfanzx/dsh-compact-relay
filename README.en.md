@@ -30,7 +30,7 @@ The plugin mounts beside the existing composer. Default parameters are tuned for
 
 ### 1. Occupancy visualization
 
-The ring is colored in segments according to the compression-assessment logic: the suggested compression point determined by the model or configured threshold, the positions of pinned messages, and the DSH native auto-compaction line (the actual trigger point computed from the host token budget: ~67.8% for deepseek-flash, while the configured threshold defaults to 80%). When occupancy crosses the actual trigger point, the ring flashes red.
+The ring is colored in segments according to the compression-assessment logic and expresses capacity only: the suggested compression point determined by the model or configured threshold, and the DSH native auto-compaction line (the actual trigger point computed from the host token budget: ~67.8% for deepseek-flash, while the configured threshold defaults to 80%). Since 0.5.1 the ring no longer draws pin positions (position marks are reserved for the 0.6 timeline); pin status is shown as counts in the hover card and menu. When occupancy crosses the actual trigger point, the ring flashes red.
 
 When occupancy enters the compressible band (between the minimum compression line and the compression line), the plugin proactively tells the model the current occupancy and band through a dynamic system-prompt context, so it can decide whether to record a compression node after finishing a natural milestone (since 0.3.4; before that the model could not see occupancy, so the condition was not actionable).
 
@@ -48,7 +48,7 @@ Running `/handoff` generates a handoff document with nine standard sections (ove
 
 ### 4. Message pinning
 
-Running `/pin` marks messages that must be preserved during compaction. Pinned messages appear as magenta blocks on the ring and as locked rows in the menu.
+Running `/pin` marks messages that must be preserved during compaction. Pin status and counts appear in the hover card ("N pinned") and the menu (locked row / "N locked · M stale"); since 0.5.1 the ring no longer draws pin position blocks (position marks belong to the 0.6 timeline).
 
 ![The indicator ring menu](assets/menu.jpg)
 
@@ -62,8 +62,9 @@ Running `/pin` marks messages that must be preserved during compaction. Pinned m
 | Red arc | The handoff threshold has been passed; switching to a new session is recommended |
 | Ring notch | Suggested compression point (the system proactively prompts the model to assess inside the compressible band; shown after the model records one or the compression line is reached) |
 | Violet tick | DSH native auto-compaction line: the actual trigger point computed as `min(window × thresholdRatio, window − reserved output − headroomTokens)` (~67.8% for deepseek-flash; the configured `thresholdRatio` defaults to 80% and is only a theoretical ceiling) |
-| Magenta blocks | Distribution of pinned messages in the history |
 | Full-ring red flash | The native auto-compaction line has been crossed; DSH native auto-compaction is imminent |
+
+> Since 0.5.1 the ring expresses capacity only and no longer marks pin positions; "N pinned / M stale" is shown in the hover card and menu (position marks belong to the 0.6 timeline).
 
 ![Crossing the native auto-compaction line](assets/native-alert.jpg)
 

@@ -37,17 +37,23 @@ const tokenMeter = {
 };
 
 /**
- * @param {{liveSession?:object, agent?:object, archivedSessionIds?:string[]}} input
+ * @param {{liveSession?:object, agent?:object, archivedSessionIds?:string[], unarchive?:boolean}} input
  * @returns {object} readState deps
  */
-function depsOf({ liveSession, agent, archivedSessionIds } = {}) {
+function depsOf({ liveSession, agent, archivedSessionIds, unarchive } = {}) {
   return {
     ctx: {
       tokenMeter,
       llm,
       // 0.5.0：父会话归档状态（readState.parentArchived）的数据源。
+      // 0.5.1 DCR-03：同一份 registry 还回答「能不能恢复」（capabilities.unarchive）。
       get: (name) =>
-        name === 'workspaceRegistry' && Array.isArray(archivedSessionIds) ? { archivedSessionIds } : undefined,
+        name === 'workspaceRegistry' && (Array.isArray(archivedSessionIds) || unarchive === true)
+          ? {
+              ...(Array.isArray(archivedSessionIds) ? { archivedSessionIds } : {}),
+              ...(unarchive === true ? { async unarchiveSession() {} } : {}),
+            }
+          : undefined,
       agents: {
         get: (id) => (agent !== undefined && agent.id === id ? agent : undefined),
         list: () => (agent === undefined ? [] : [agent]),
@@ -245,8 +251,10 @@ function sessionWithRelay(id, data) {
 
 {
   // 新记录：F3 写入的字段齐全（parentId/childId/ordinal/baseTitle/scheme/path）。
+  // 0.5.1 DCR-01：chain 只投影**本会话的入站记录**（childId===本会话 id），
+  // 所以夹具的 session.id 必须和 record.childId 对齐，否则它是一条出站记录。
   const path = '/Users/x/.dsh/sessions/child-1/session.jsonl';
-  const session = sessionWithRelay('session-chain-full', {
+  const session = sessionWithRelay('child-1', {
     parentId: 'parent-1',
     childId: 'child-1',
     ordinal: 2,
@@ -299,7 +307,8 @@ function sessionWithRelay(id, data) {
 
 {
   // 旧记录（0.3 写法：只有 index/parentSessionId/childId/at，没有 scheme/baseTitle/path）。
-  const session = sessionWithRelay('session-chain-legacy', {
+  // 同样是「本会话的入站记录」：session.id 与 record.childId 一致。
+  const session = sessionWithRelay('child-0', {
     parentSessionId: 'parent-0',
     childId: 'child-0',
     index: 1,
@@ -327,7 +336,129 @@ function sessionWithRelay(id, data) {
   assert.equal(state.chain, null);
 }
 
+{
+  // 0.5.1 DCR-01：只有出站记录（本会话交接给下一代）→ chain=null（接力条不显示），
+  // 但旧字段 relay 一个字节都不改，出站投影走新增的 next。
+  const session = new MockSession({
+    id: 'session-outbound-only',
+    cwd: undefined,
+    agentPreset: undefined,
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '历史' } },
+      { type: RELAY_RECORD_TYPE, ignorable: true, data: { parentId: 'session-outbound-only', childId: 'session-next-gen', ordinal: 1, baseTitle: '原题', scheme: 'history-n', path: '/tmp/handoff-a.md', at: 1 } },
+    ],
+  });
+  const state = await readState(depsOf({ liveSession: session, archivedSessionIds: ['session-outbound-only'] }), {
+    sessionId: session.id,
+  });
+  assert.equal(state.chain, null, '出站记录不是「已接力自」→ chain=null');
+  assert.equal(state.parentArchived, null, 'chain=null 时没有父会话可查归档');
+  assert.equal(state.relay.childId, 'session-next-gen', '旧字段 relay 仍是最近一条记录（不改语义）');
+  assert.deepEqual(
+    state.next,
+    { ordinal: 1, baseTitle: '原题', parentId: 'session-outbound-only', childId: 'session-next-gen', scheme: 'history-n', path: '/tmp/handoff-a.md' },
+    'next = 最近一条出站记录的只读投影（父→子入口/父记录补 path 用）',
+  );
+  // 0.5.1 DCR-03：宿主没有 unarchiveSession → 客户端据此隐藏「恢复旧会话」。
+  assert.deepEqual(state.capabilities, { unarchive: false }, '没有 registry.unarchiveSession → unarchive=false');
+}
+
+{
+  // 0.5.1 DCR-01（中段会话，bug 原形）：日志里入站在前、出站在后。
+  // 旧实现取「最近一条」→ childId=下一代 → 客户端判定不是本会话 → 接力条消失。
+  const mid = new MockSession({
+    id: 'session-mid',
+    cwd: undefined,
+    agentPreset: undefined,
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '交接单' } },
+      {
+        type: RELAY_RECORD_TYPE,
+        ignorable: true,
+        data: { parentId: 'session-root', childId: 'session-mid', ordinal: 1, baseTitle: '原题', scheme: 'history-n', path: '/tmp/handoff-hop1.md', at: 1 },
+      },
+      { type: 'user/message', data: { role: 'user', content: '下一跳' } },
+      {
+        type: RELAY_RECORD_TYPE,
+        ignorable: true,
+        data: { parentId: 'session-mid', childId: 'session-leaf', ordinal: 2, baseTitle: '原题', scheme: 'history-n', path: '/tmp/handoff-hop2.md', at: 2 },
+      },
+    ],
+  });
+  const state = await readState(depsOf({ liveSession: mid, archivedSessionIds: ['session-root'] }), { sessionId: mid.id });
+  assert.deepEqual(
+    state.chain,
+    { ordinal: 1, baseTitle: '原题', parentId: 'session-root', childId: 'session-mid', scheme: 'history-n', path: '/tmp/handoff-hop1.md' },
+    '中段会话：chain 取的是本会话的入站记录，不是最新的出站记录',
+  );
+  assert.equal(state.parentArchived, true, 'parentArchived 用入站 parentId（session-root）');
+  assert.equal(state.relay.ordinal, 2, '旧字段 relay 仍是最近一条出站记录');
+  assert.equal(state.next.childId, 'session-leaf', 'next 是最近一条出站记录（第 2 跳）');
+  // 归档集合里只有出站的目标（下一代）时，不能把 parentArchived 算成 true。
+  const wrongArchive = await readState(depsOf({ liveSession: mid, archivedSessionIds: ['session-leaf'] }), {
+    sessionId: mid.id,
+  });
+  assert.equal(wrongArchive.parentArchived, false, 'parentArchived 只看入站 parentId，不被出站 childId 带偏');
+  const capable = await readState(depsOf({ liveSession: mid, unarchive: true }), { sessionId: mid.id });
+  assert.deepEqual(capable.capabilities, { unarchive: true }, '宿主有 unarchiveSession → unarchive=true');
+}
+
+{
+  // 0.5.1 批 3（父→子入口）：`nextArchived` = 出站记录的目标会话（下一代）是否在归档集合里。
+  //
+  // 和 parentArchived 完全对称：用 **next.childId** 查（不是本会话、也不是入站 parentId），
+  // 客户端据此决定「去新会话」要不要先 unarchive（宿主拒绝打开归档会话）。
+  // 没有出站记录 / 宿主读不到归档集合 → null（不知道，不猜 false）。
+  const parent = new MockSession({
+    id: 'session-parent-side',
+    cwd: undefined,
+    agentPreset: undefined,
+    events: [
+      { type: 'user/message', data: { role: 'user', content: '交接单' } },
+      {
+        type: RELAY_RECORD_TYPE,
+        ignorable: true,
+        data: { parentId: 'session-parent-side', childId: 'session-child-side', ordinal: 1, baseTitle: '原题', scheme: 'history-n', path: '/tmp/handoff-out.md', at: 1 },
+      },
+    ],
+  });
+  const archivedChild = await readState(depsOf({ liveSession: parent, archivedSessionIds: ['session-child-side'] }), {
+    sessionId: parent.id,
+  });
+  assert.equal(archivedChild.nextArchived, true, '下一代在归档集合 → nextArchived=true（去新会话先恢复）');
+  assert.equal(archivedChild.parentArchived, null, '没有入站记录 → parentArchived 仍是 null（两个字段各查各的）');
+
+  const liveChild = await readState(depsOf({ liveSession: parent, archivedSessionIds: [] }), { sessionId: parent.id });
+  assert.equal(liveChild.nextArchived, false, '下一代不在归档集合 → false（可以直接 openSession）');
+
+  // 归档集合里只有本会话自己（交接后旧会话被归档）时，nextArchived 不能被算成 true。
+  const selfArchived = await readState(depsOf({ liveSession: parent, archivedSessionIds: ['session-parent-side'] }), {
+    sessionId: parent.id,
+  });
+  assert.equal(selfArchived.nextArchived, false, 'nextArchived 只看出站 childId，不被本会话/入站 id 带偏');
+
+  const noRegistry = await readState(depsOf({ liveSession: parent }), { sessionId: parent.id });
+  assert.equal(noRegistry.nextArchived, null, '宿主没有归档服务 → nextArchived=null（不知道）');
+
+  // 没有出站记录（子会话一侧）：nextArchived 必须为 null，不能拿别人的归档状态充数。
+  const childSession = sessionWithRelay('session-child-side', {
+    parentId: 'session-parent-side',
+    childId: 'session-child-side',
+    ordinal: 1,
+    baseTitle: '原题',
+    scheme: 'history-n',
+  });
+  const noNext = await readState(depsOf({ liveSession: childSession, archivedSessionIds: ['session-parent-side'] }), {
+    sessionId: childSession.id,
+  });
+  assert.equal(noNext.next, null);
+  assert.equal(noNext.nextArchived, null, '没有出站记录 → nextArchived=null');
+}
+
 console.log('PASS  0.3.5 state：无活 agent 的 live session 仍算出可压范围 + reason=no_agent');
 console.log('PASS  0.3.5 state：有活 agent reason=null；空会话/无会话不误报');
 console.log('PASS  0.4 BUG-013 state：checkpoint 之后的旧 compressHint 失效 / 更新的 hint 保留');
 console.log('PASS  0.5.0 F4 state：relay 扩成只读 chain（新记录全字段、旧记录 null、无记录 null、旧字段不变）');
+console.log('PASS  0.5.1 DCR-01 state：chain=本会话入站记录、next=出站投影、parentArchived 取入站 parentId');
+console.log('PASS  0.5.1 DCR-03 state：capabilities.unarchive 反映宿主有没有恢复接口');
+console.log('PASS  0.5.1 批 3 state：nextArchived 看出站 childId（父→子入口先恢复归档会话）');

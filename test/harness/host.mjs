@@ -306,6 +306,9 @@ export function createHandoffHost({
   registryMissing = false,
   archiveBroken = false,
   archiveActive = null,
+  // 0.5.1 批 2：侧栏置顶集合（宿主 registry.pinnedSessionIds 同形）。归档时宿主会在
+  // 同一次写盘里把该会话从置顶集合移除（置顶与归档互斥，见 dsh-workspace 源码）。
+  pinnedSessionIds = [],
   reset = true,
   tokenMeter,
   services = {},
@@ -335,6 +338,7 @@ export function createHandoffHost({
   // 的归档接缝（archiveSession / unarchiveSession / archivedSessionIds），
   // 这样 handoff 的自动归档在单测里走的是与宿主同形的调用路径。
   const archived = new Set();
+  const pinned = new Set(Array.isArray(pinnedSessionIds) ? pinnedSessionIds.filter((id) => typeof id === 'string') : []);
   const registry = {
     async create(cwd) {
       if (registryBroken) throw new Error('workspace registry down');
@@ -354,6 +358,8 @@ export function createHandoffHost({
         throw error;
       }
       archived.add(sessionId);
+      // 宿主语义：归档与置顶互斥，archiveSession 同一次写盘里取消置顶。
+      pinned.delete(sessionId);
       record.archivedSessionIds = [...archived];
     },
     async unarchiveSession(sessionId) {
@@ -363,6 +369,16 @@ export function createHandoffHost({
     },
     get archivedSessionIds() {
       return [...archived];
+    },
+    get pinnedSessionIds() {
+      return [...pinned];
+    },
+    async pinSession(sessionId) {
+      if (archived.has(sessionId)) throw new Error('cannot pin archived session');
+      pinned.add(sessionId);
+    },
+    async unpinSession(sessionId) {
+      pinned.delete(sessionId);
     },
   };
 

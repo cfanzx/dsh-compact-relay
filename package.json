@@ -1,6 +1,6 @@
 {
   "name": "dsh-compact-relay",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "DeepSeek Harness 上下文指示器插件：提供容量监控、压缩预览与确认、九段式交接单生成及消息锁定功能。 · Context indicator for DSH: preview-then-confirm compaction, 9-section session handoff, and pinned messages.",
   "type": "module",
   "main": "lib/index.js",
@@ -53,7 +53,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node scripts/build-client.mjs --check && node --check lib/client.js && node test/smoke.mjs && node test/handoff.mjs && node test/plugin-load.mjs && node test/contract.mjs && node test/compact-log.mjs && node test/compress-cue.mjs && node test/state-passive.mjs && node test/native-compaction.mjs && node test/markdown-lite.mjs && node test/diagnostics.mjs && node test/pin-contract.mjs && node test/ledger.mjs && node test/handoff-p2.mjs && node test/relay-title-scheme.mjs && node test/relay-chain.mjs && node test/handoff-naming.mjs && node test/native-line.mjs && node test/handoff-guard.mjs && node test/settings-ux.mjs && node test/archive.mjs && node test/relay-bar.mjs",
+    "test": "node scripts/build-client.mjs --check && node --check lib/client.js && node test/smoke.mjs && node test/handoff.mjs && node test/plugin-load.mjs && node test/contract.mjs && node test/compact-log.mjs && node test/compress-cue.mjs && node test/state-passive.mjs && node test/native-compaction.mjs && node test/markdown-lite.mjs && node test/clip.mjs && node test/diagnostics.mjs && node test/pin-contract.mjs && node test/ledger.mjs && node test/handoff-p2.mjs && node test/relay-title-scheme.mjs && node test/relay-chain.mjs && node test/relay-chain-endpoint.mjs && node test/handoff-naming.mjs && node test/native-line.mjs && node test/handoff-guard.mjs && node test/settings-ux.mjs && node test/pin-health.mjs && node test/archive.mjs && node test/relay-bar.mjs",
     "test:e2e": "node test/e2e/smoke.mjs",
     "test:e2e:settings": "node test/e2e/settings-ui.mjs",
     "test:e2e:settings-ux": "node test/e2e/settings-ux.mjs",
