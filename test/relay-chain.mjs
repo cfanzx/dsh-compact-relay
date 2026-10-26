@@ -7,14 +7,14 @@
  * 一条接力链之后的不变量：
  *
  *   1) 三跳接力：第 1/2/3 次序号 1→2→3，标题干净（原题无前缀）也不重号；
- *   2) record 形状：子会话自带 canonical 字段，父会话记录刻意不写 F2 新字段（现网写出不变）；
+ *   2) record 形状：父/子都写 scheme+titleSeq，新链父记录另带 historyTitle；
  *   3) scheme 不混用：交接第 N 次 / 历史 N / legacy 各归各的，history 标题可往返；
  *   4) 旧链兼容：交接第 N 次解析逐字节不变（固定期望，不随实现漂）；
  *   5) 投影：relayChainOf 只取记录字段，缺的给 null、没 path 就不出现这个键；
  *      6) readState：chain 与 relay 同源下发（老字段一个不改）。
  *
- * 只锁**现有行为**，不测 0.5.0 尚未实现的改名/接力条/自动归档。这里红 = 地基契约被改，
- * 需要连同 0.5.0 的迁移方案一起评审，而不是顺手把期望改掉。
+ * 0.5.0 命名反转已实现：这里锁「新链继承原名 + 旧会话历史 N + 旧链一字符不改」的
+ * 链不变量。这里红 = 链契约被改，需要连同迁移方案一起评审，而不是顺手把期望改掉。
  *
  *   node test/relay-chain.mjs
  */
@@ -115,7 +115,10 @@ for (const hop of hops) {
   assert.equal(splitHandoffTitle(CLEAN_TITLE).handedOff, 0, '夹具标题本身不带链号');
   assert.equal(plan.index, ordinal, `第 ${ordinal} 跳 plan.index 必须是 ${ordinal}`);
   assert.equal(plan.baseTitle, CLEAN_TITLE, '原题不随标题前缀变化');
-  assert.equal(plan.title, `交接第 ${ordinal} 次：${CLEAN_TITLE}`, '交接标题序号连续');
+  // 0.5.0 命名反转：干净标题 = 新链 → 新会话继承原名，旧会话背「历史 N」。
+  assert.equal(plan.scheme, 'history-n', `第 ${ordinal} 跳走新链`);
+  assert.equal(plan.title, CLEAN_TITLE, '新会话标题=原名（不带序号）');
+  assert.equal(plan.historyTitle, `历史 ${ordinal}：${CLEAN_TITLE}`, '旧会话标题序号连续');
   // 第 1 跳没有父记录可用（旧会话），第 2 跳起必须走 record，不能回退标题解析。
   assert.equal(plan.viaRecord, ordinal > 1, `第 ${ordinal} 跳 viaRecord`);
 
@@ -125,6 +128,8 @@ for (const hop of hops) {
   assert.equal(own[0].data.baseTitle, CLEAN_TITLE);
   assert.equal(own[0].data.parentId, hopParent.id, 'record.parentId 指向真正的父会话');
   assert.equal(own[0].data.childId, child.id);
+  assert.equal(own[0].data.scheme, 'history-n', '子记录与本次链的 scheme 一致');
+  assert.equal(own[0].data.title, CLEAN_TITLE, '子记录 title 是干净原名');
   assert.equal(relayRecordOf(hopParent).ordinal, ordinal, '父会话里这一跳的 record 同号');
 
   // 交接单头部的「第 N 次交接」与实际链号一致（文档与数据不能各说各话）。
@@ -137,14 +142,18 @@ assert.deepEqual(
   [1, 2, 3],
   '三跳链序号依次 1、2、3',
 );
+// 每跳两次 rename：先建子会话改原名，成功后再把旧会话改「历史 N」。
 assert.deepEqual(
-  record.renames.map((rename) => rename.title),
+  record.renames,
   [
-    '交接第 1 次：原会话标题',
-    '交接第 2 次：原会话标题',
-    '交接第 3 次：原会话标题',
+    { sessionId: firstHop.child.id, title: CLEAN_TITLE },
+    { sessionId: source.id, title: `历史 1：${CLEAN_TITLE}` },
+    { sessionId: secondHop.child.id, title: CLEAN_TITLE },
+    { sessionId: firstHop.child.id, title: `历史 2：${CLEAN_TITLE}` },
+    { sessionId: thirdHop.child.id, title: CLEAN_TITLE },
+    { sessionId: secondHop.child.id, title: `历史 3：${CLEAN_TITLE}` },
   ],
-  '三跳标题 1→2→3，不重号',
+  '三跳：新会话继承原名，旧会话历史 1→2→3，不重号',
 );
 
 // 标题被手改/改成「历史 N」时，链号与原名仍以 record 为准（0.5.0 改名后的真实场景）。
@@ -163,12 +172,35 @@ assert.deepEqual(
   assert.equal(plan.viaRecord, true);
   assert.equal(plan.index, 3, '链号 = record.ordinal + 1，标题里的 9 不参与');
   assert.equal(plan.baseTitle, CLEAN_TITLE, '原题来自 record，不跟着面板标题跑');
+  // scheme 也以 record 为准：旧记录（handoff-n）不因标题被改成「历史 9」而漂到新链。
+  assert.equal(plan.scheme, 'handoff-n', '旧链 record 固定旧命名（cutover，不迁移）');
+  assert.equal(plan.title, '交接第 3 次：原会话标题');
+  assert.equal(plan.historyTitle, null, '旧链不生成历史标题');
+
+  // 新链 record（history-n）同样不信面板标题：序号/原名/方案都来自 record。
+  const historyDrift = new MockSession({
+    id: 'session-history-drift',
+    events: [
+      {
+        type: RELAY_RECORD_TYPE,
+        ignorable: true,
+        data: { parentId: 'gp', childId: 'session-history-drift', ordinal: 2, baseTitle: CLEAN_TITLE, scheme: 'history-n', at: 1 },
+      },
+    ],
+  });
+  const historyPlan = handoffTitlePlanOf(ctxWithTitle('历史 9：被手改过的面板标题'), historyDrift);
+  assert.equal(historyPlan.viaRecord, true);
+  assert.equal(historyPlan.index, 3);
+  assert.equal(historyPlan.scheme, 'history-n', '新链 record 继续新链');
+  assert.equal(historyPlan.baseTitle, CLEAN_TITLE);
+  assert.equal(historyPlan.title, CLEAN_TITLE);
+  assert.equal(historyPlan.historyTitle, '历史 3：原会话标题');
 }
 
-console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3，标题干净/被改名也不重号');
+console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3；新链继承原名/旧会话历史 N，标题被手改也不重号');
 
 /* ================================================================== *
- * 2) record 形状：子会话字段齐全，父会话记录不写新字段（现网写出不变）
+ * 2) record 形状：父/子会话都写 scheme/titleSeq；新链父记录再写 historyTitle
  * ================================================================== */
 
 {
@@ -184,12 +216,12 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3，标题干净/�
   assert.equal(childRecord.childId, firstHop.child.id);
   assert.equal(childRecord.ordinal, 1);
   assert.equal(childRecord.baseTitle, CLEAN_TITLE);
-  assert.equal(childRecord.scheme, 'handoff-n', '交接产生的链固定写 handoff-n');
-  assert.equal(childRecord.title, '交接第 1 次：原会话标题');
+  assert.equal(childRecord.scheme, 'history-n', '干净标题的首次交接走新链 history-n');
+  assert.equal(childRecord.title, CLEAN_TITLE, '新会话标题=原名');
   assert.equal(Number.isInteger(childRecord.at), true);
   assert.equal(typeof childRecord.atIso, 'string');
   assert.equal(childRecord.titleSeq, null, 'rename 不返回 eventSeq 时写 null（不猜）');
-  assert.equal('historyTitle' in childRecord, false, 'handoff-n 记录不写 historyTitle');
+  assert.equal('historyTitle' in childRecord, false, '子会话标题是原名，不写 historyTitle');
   assert.equal('path' in childRecord, false, '子记录不重复父记录的交接单路径');
 
   // 读回：白名单补齐 0.3 旧名（只读别名，不改写盘形状）。
@@ -199,9 +231,9 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3，标题干净/�
   assert.equal(childRead.ordinal, 1);
   assert.equal(childRead.index, 1, 'normalize 补齐旧字段 index');
   assert.equal(childRead.parentSessionId, source.id, 'normalize 补齐旧字段 parentSessionId');
-  assert.equal(childRead.scheme, 'handoff-n');
+  assert.equal(childRead.scheme, 'history-n');
   assert.equal(childRead.titleSeq, null);
-  assert.equal(childRead.historyTitle, null, '缺失字段读成 null');
+  assert.equal(childRead.historyTitle, null, '子记录缺失字段读成 null');
   assert.equal(Object.hasOwn(childRead, 'path'), false);
   // 终态对照：最新记录 ≠ 自己的记录 —— 所以「自己的链号」必须按 childId 认，不能只看最后一条。
   assert.equal(relayRecordOf(firstHop.child).ordinal, 2, 'child1 交接出下一代后，最新记录是第 2 跳的父记录');
@@ -217,11 +249,12 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3，标题干净/�
   assert.equal(parentRecord.ordinal, 1);
   assert.equal(parentRecord.index, 1, '旧字段 index 照旧写');
   assert.equal(parentRecord.baseTitle, CLEAN_TITLE);
-  assert.equal(parentRecord.title, '交接第 1 次：原会话标题');
+  assert.equal(parentRecord.title, CLEAN_TITLE, '父记录的 title 仍是新会话标题（新链=原名）');
   assert.equal(parentRecord.path, firstHop.result.path, '父记录保留交接单路径');
-  assert.equal('scheme' in parentRecord, false, '父记录不写 scheme（F2 只放行读取）');
-  assert.equal('titleSeq' in parentRecord, false, '父记录不写 titleSeq');
-  assert.equal('historyTitle' in parentRecord, false, '父记录不写 historyTitle');
+  // 0.5.0 有意行为变化：父记录也写 scheme + titleSeq（F5 旧期望「父记录不写」已更新）。
+  assert.equal(parentRecord.scheme, 'history-n', '父记录与子记录同 scheme');
+  assert.equal(parentRecord.titleSeq, null, '父记录 titleSeq 取旧会话 rename 的 eventSeq（替身不返回→null）');
+  assert.equal(parentRecord.historyTitle, `历史 1：${CLEAN_TITLE}`, '父记录额外记下旧会话改名后的标题');
 
   // 双写一致：同一次交接在父、子两侧写的链号/原题/子 id 必须相同。
   assert.equal(parentRecord.ordinal, childRecord.ordinal, '父/子记录 ordinal 相同');
@@ -229,7 +262,7 @@ console.log('PASS  0.5.0 F5 链序号：三跳接力 1→2→3，标题干净/�
   assert.equal(parentRecord.baseTitle, childRecord.baseTitle, '父/子记录 baseTitle 相同');
 }
 
-console.log('PASS  0.5.0 F5 record：子会话字段齐全；父记录不写 scheme/titleSeq/historyTitle（现网写出不变）');
+console.log('PASS  0.5.0 F5 record：父/子记录同 scheme+titleSeq；新链父记录带 historyTitle、子记录不带 path');
 
 /* ================================================================== *
  * 3) scheme 不混用：handoff-n / history-n / legacy + history 标题往返
@@ -348,7 +381,9 @@ assert.equal(relayTitleOf(2, 'X'), '交接第 2 次：X', '旧标题生成格式
   assert.equal(plan.viaRecord, false, '无 record 才回退标题解析');
   assert.equal(plan.index, 3);
   assert.equal(plan.baseTitle, '旧会话');
-  assert.equal(plan.title, '交接第 3 次：旧会话');
+  assert.equal(plan.scheme, 'handoff-n', '旧标题链继续旧命名（cutover）');
+  assert.equal(plan.title, '交接第 3 次：旧会话', '旧链标题一字符不改');
+  assert.equal(plan.historyTitle, null, '旧链不生成历史标题');
 }
 
 // 0.3 旧 record（只有 index/parentSessionId）：序号继续，原题从标题兜底读。
@@ -367,6 +402,7 @@ assert.equal(relayTitleOf(2, 'X'), '交接第 2 次：X', '旧标题生成格式
   assert.equal(plan.viaRecord, true);
   assert.equal(plan.index, 2, 'index=1 的旧记录 → 下一次是第 2 次');
   assert.equal(plan.baseTitle, '旧会话', '旧记录没有 baseTitle 时从标题兜底');
+  assert.equal(plan.scheme, 'handoff-n', '0.3 旧记录 scheme=null → 旧链（不迁移）');
 }
 
 console.log('PASS  0.5.0 F5 旧链：交接第 N 次解析逐字节不变；无 record/0.3 旧 record 仍能续号');
@@ -419,14 +455,14 @@ console.log('PASS  0.5.0 F5 旧链：交接第 N 次解析逐字节不变；无 
       baseTitle: CLEAN_TITLE,
       parentId: source.id,
       childId: firstHop.child.id,
-      scheme: 'handoff-n',
+      scheme: 'history-n',
     },
     'F3 子记录没有 path 就不出现这个键',
   );
   assert.equal(Object.hasOwn(chain, 'path'), false);
 }
 
-// 5.3 父记录（有 path、按 F2 不写 scheme）→ path 带上，scheme 不猜、给 null。
+// 5.3 父记录（0.5.0 也写 scheme + historyTitle）→ path 带上；投影不暴露 historyTitle。
 {
   const chain = relayChainOf(relayRecordOf(source));
   assert.deepEqual(
@@ -436,10 +472,10 @@ console.log('PASS  0.5.0 F5 旧链：交接第 N 次解析逐字节不变；无 
       baseTitle: CLEAN_TITLE,
       parentId: source.id,
       childId: firstHop.child.id,
-      scheme: null,
+      scheme: 'history-n',
       path: firstHop.result.path,
     },
-    '父记录没写的 scheme 投影为 null（不从标题反推 handoff-n）',
+    '父记录写什么 scheme 就投影什么（historyTitle 不属于链投影字段）',
   );
   assert.deepEqual(
     Object.keys(chain),
@@ -509,7 +545,7 @@ function agentOf(session) {
     baseTitle: CLEAN_TITLE,
     parentId: thirdHop.parent.id,
     childId: thirdHop.child.id,
-    scheme: 'handoff-n',
+    scheme: 'history-n',
   });
   assert.equal(Object.hasOwn(childState.chain, 'path'), false, '子会话链没有 path 键');
   // 旧字段原样：子记录没写 0.3 旧名，读侧仍补齐（老客户端还能读）。
@@ -518,13 +554,13 @@ function agentOf(session) {
   assert.equal(childState.relay.parentSessionId, thirdHop.parent.id);
   assert.equal(childState.relay.childId, thirdHop.child.id);
 
-  // 源会话：日志里是父记录（ordinal=1、有 path、无 scheme），投影照记录给。
+  // 源会话：日志里是父记录（ordinal=1、有 path、scheme=history-n），投影照记录给。
   const sourceState = await readState(stateDeps(), { agent: agentOf(source) });
   assert.deepEqual(sourceState.chain, relayChainOf(sourceState.relay));
   assert.equal(sourceState.chain.ordinal, 1);
-  assert.equal(sourceState.chain.scheme, null, '父记录没写 scheme → 链投影 null，不从标题猜');
+  assert.equal(sourceState.chain.scheme, 'history-n', '父记录写的新链 scheme 原样投影');
   assert.equal(sourceState.chain.path, firstHop.result.path);
   assert.equal(sourceState.relay.parentId, source.id);
 }
 
-console.log('PASS  0.5.0 F5 readState：chain 与 relay 同源下发（子记录带链号、父记录带 path、旧字段不变）');
+console.log('PASS  0.5.0 F5 readState：chain 与 relay 同源下发（子记录带链号、父记录带 path+scheme、旧字段不变）');

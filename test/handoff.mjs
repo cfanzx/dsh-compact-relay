@@ -230,9 +230,13 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.deepEqual(record.resolves, ['preset-x']);
   assert.deepEqual(record.mounts, ['preset-x']);
 
-  // 5) 工作区挂载 + 标题
+  // 5) 工作区挂载 + 标题（0.5.0 命名反转：新会话继承原名，旧会话被改名「历史 1」）。
+  //    顺序固定：先建子会话/改子标题，成功后再改旧名（旧名是可见副作用，失败不阻断）。
   assert.deepEqual(record.attached, [{ cwd: '/tmp/relay-test-ws', sessionId: result.childId }]);
-  assert.deepEqual(record.renames, [{ sessionId: result.childId, title: '交接第 1 次：原会话标题' }]);
+  assert.deepEqual(record.renames, [
+    { sessionId: result.childId, title: '原会话标题' },
+    { sessionId: 'source-session', title: '历史 1：原会话标题' },
+  ]);
 
   // 5.5) A5 接力链：父会话日志里要有一条结构化 relay 记录（不读文案）。
   const relayEvents = session.log.filter((event) => event.type === 'plugin:compact-relay/relay');
@@ -243,16 +247,16 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(relay.index, 1);
   assert.equal(relay.baseTitle, '原会话标题');
   assert.equal(relay.path, result.path);
-  assert.equal(relay.title, '交接第 1 次：原会话标题');
+  assert.equal(relay.title, '原会话标题', '父记录的 title 仍是新会话标题（新链=原名）');
   // 0.4 P2-2：接力链元数据补全（canonical 字段 + 本地 ISO 时间），首次交接 ordinal=1。
   assert.equal(relay.parentId, 'source-session');
   assert.equal(relay.ordinal, 1, '首次交接 ordinal=1');
   assert.equal(Number.isInteger(relay.at), true);
   assert.equal(typeof relay.atIso, 'string', '交接记录要带可读的本地时间');
-  // 0.4.3 F2：新字段只放行读取；父会话 relay 记录的写出内容保持原样（现网数据安全）。
-  assert.equal('scheme' in relay, false);
-  assert.equal('titleSeq' in relay, false);
-  assert.equal('historyTitle' in relay, false);
+  // 0.5.0：父/子记录都写 scheme + titleSeq；新链父记录再写 historyTitle（旧会话的新名字）。
+  assert.equal(relay.scheme, 'history-n', '干净标题的首次交接走新链 history-n');
+  assert.equal(relay.titleSeq, null, '默认替身 rename 不返回 eventSeq → null（取不到不猜）');
+  assert.equal(relay.historyTitle, '历史 1：原会话标题', '父记录记下旧会话改名后的标题');
   assert.equal(doc.includes('- 交接序号：第 1 次交接'), true, '交接单头要写「第 N 次交接」');
   assert.equal(result.message.includes('#child=' + result.childId), true, '正文要带结构化 childId 兜底');
 
@@ -279,23 +283,26 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(childRelay.childId, result.childId);
   assert.equal(childRelay.ordinal, 1, '子会话记录 ordinal=1');
   assert.equal(childRelay.baseTitle, '原会话标题');
-  assert.equal(childRelay.title, '交接第 1 次：原会话标题');
-  assert.equal(childRelay.scheme, 'handoff-n');
+  assert.equal(childRelay.title, '原会话标题', '新会话标题=原名，不带序号');
+  assert.equal(childRelay.scheme, 'history-n', '子记录与父记录同 scheme');
   assert.equal(Number.isInteger(childRelay.at), true);
   assert.equal(typeof childRelay.atIso, 'string', '时间字段与父记录同格式');
   assert.equal(childRelay.titleSeq, null, '默认替身 rename 不返回 eventSeq → null（取不到不猜）');
-  assert.equal('historyTitle' in childRelay, false, 'handoff-n 记录不写 historyTitle');
+  assert.equal('historyTitle' in childRelay, false, '子会话自己的标题是原名，不写 historyTitle');
   // 标准读取器能读回新字段；链号从子会话记录推进（这里标题是干净的原题，解析必得 0）。
   const childRead = relayRecordOf(record.child);
   assert.equal(childRead.ordinal, 1);
   assert.equal(childRead.index, 1, 'normalize 补齐 0.3 旧字段别名');
   assert.equal(childRead.parentSessionId, 'source-session');
-  assert.equal(childRead.scheme, 'handoff-n');
+  assert.equal(childRead.scheme, 'history-n');
   assert.equal(childRead.titleSeq, null);
   const nextPlan = handoffTitlePlanOf(ctx, record.child);
   assert.equal(nextPlan.viaRecord, true, '下一次交接必须走 record，不回退标题解析');
   assert.equal(nextPlan.index, 2, '0.5.0 子会话标题变干净后，链号仍靠 record 递增（不重复 1）');
   assert.equal(nextPlan.baseTitle, '原会话标题');
+  assert.equal(nextPlan.scheme, 'history-n', '链上 scheme 不漂移');
+  assert.equal(nextPlan.title, '原会话标题');
+  assert.equal(nextPlan.historyTitle, '历史 2：原会话标题');
 });
 
 test('A1b 交接预览：九段草稿 + 就绪清单，不写盘/不建会话/不压历史', async () => {
@@ -439,11 +446,12 @@ test('0.4.4 F3：rename 快照的 eventSeq → 子会话记录 titleSeq；0/缺�
       engine,
       session,
       doc: '# 交接单\n\n## 目标\n- F3 titleSeq 数字路径',
-      title: '交接第 1 次：原会话标题',
+      title: '原会话标题',
     });
     assert.equal(child.childId, record.child.id);
     const relays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
     assert.equal(relays.length, 1);
+    assert.equal(relays[0].data.scheme, 'history-n', '干净标题 → 新链（plan 现场计算）');
     assert.equal(relays[0].data.titleSeq, 12, 'rename 返回的 eventSeq 要写进子会话记录');
     assert.equal(relayRecordOf(record.child).titleSeq, 12, 'normalize 能读回数字 titleSeq');
     assert.equal(
@@ -455,7 +463,7 @@ test('0.4.4 F3：rename 快照的 eventSeq → 子会话记录 titleSeq；0/缺�
   {
     const session = baseSourceSession();
     const { ctx, engine, record } = makeCtx({ renameEventSeq: 0 });
-    await createHandoffSession({ ctx, engine, session, doc: 'doc', title: '交接第 1 次：原会话标题' });
+    await createHandoffSession({ ctx, engine, session, doc: 'doc', title: '原会话标题' });
     const relays = record.child.log.filter((event) => event.type === RELAY_RECORD_TYPE);
     assert.equal(relays[0].data.titleSeq, null, 'eventSeq=0 不在 relay 白名单（正整数）内 → null，不写非法值');
     assert.equal(relayRecordOf(record.child).titleSeq, null);
@@ -989,27 +997,28 @@ test('M6 钉住：钉住挡在最前面 → 不压，并明确提示被钉住挡
   assert.equal(session.surface.nodes.includes(1), true, '历史没动');
 });
 
-/* ---------------- 子会话标题：不叠前缀 + 标出第几次交接 ---------------- */
+/* ---------------- 子会话标题：新链继承原名；旧链不叠前缀 + 标出第几次 ---------------- */
 
-test('M7 标题：第 N 次交接，旧堆叠格式也认得出次数', () => {
+test('M7 标题：新链继承原名，旧链（交接第 N 次/旧堆叠）仍认得出次数', () => {
   const ctxWith = (title) => ({
     get(name) {
       if (name !== 'sessionTitle') return undefined;
       return { get: () => (title === undefined ? null : { title }) };
     },
   });
-  // 第一次交接：干净标题 → 第 1 次
-  assert.equal(childTitleOf(ctxWith('dsh-compact-relay M3'), {}), '交接第 1 次：dsh-compact-relay M3');
-  // 旧格式叠了一层「接棒：」→ 第 2 次
+  // 0.5.0 命名反转：干净标题（无旧前缀）→ 新链，子会话直接继承原名，不背序号。
+  assert.equal(childTitleOf(ctxWith('dsh-compact-relay M3'), {}), 'dsh-compact-relay M3');
+  assert.equal(childTitleOf(ctxWith('历史 2：X'), {}), 'X', '无 record 的「历史 N」链继续新链');
+  // 旧格式叠了一层「接棒：」→ 旧链第 2 次（链级 cutover，不改命名）
   assert.equal(childTitleOf(ctxWith('接棒：dsh-compact-relay M3'), {}), '交接第 2 次：dsh-compact-relay M3');
   // 旧格式叠了三层（交接：接棒：接棒：）→ 第 4 次，且原题只剩一次
   assert.equal(childTitleOf(ctxWith('交接：接棒：接棒：dsh-compact-relay M3'), {}), '交接第 4 次：dsh-compact-relay M3');
-  // 新格式 → 序号 +1，原题不重复
+  // 新格式 → 序号 +1，原题不重复，继续旧链
   assert.equal(childTitleOf(ctxWith('交接第 2 次：dsh-compact-relay M3'), {}), '交接第 3 次：dsh-compact-relay M3');
   // 手改的怪标题（第 0 次 / 空题）也兜住
   assert.equal(childTitleOf(ctxWith('交接第 0 次：X'), {}), '交接第 1 次：X');
   assert.equal(childTitleOf(ctxWith('交接：'), {}), '交接第 2 次：会话');
-  // 拿不到原标题 → 第 1 次 + 会话
+  // 拿不到原标题 → 保守按旧链（读不到标题时不猜新链，避免和旧链混合）
   assert.equal(childTitleOf(ctxWith(undefined), {}), '交接第 1 次：会话');
   assert.equal(childTitleOf({ get: () => undefined }, {}), '交接第 1 次：会话');
 });

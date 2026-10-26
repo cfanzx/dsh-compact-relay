@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.5.0（未发布）· 地基
+## 0.5.0（未发布）
 
-> 只登记 0.5.0 的地基（数据面 / 纯函数 / 测试）；用户可见功能（命名反转、接力条、双向跳转、自动归档旧会话）尚未实现，不在本条。地基不单独发版。
+> 0.5.0 第一批：地基 F1–F6 + **命名反转（第一个用户可见功能）**。接力条、双向跳转、自动归档旧会话尚未实现。未 commit、未发布。
 
 ### F1+F2：历史前缀纯函数 + relay record 白名单（commit `5397863`）
 
@@ -23,10 +23,22 @@
 - **`lib/actions/state.js`**：`readState` 新增 `chain`（没有记录为 `null`），旧字段 `relay` 原样保留（0.3 旧名 `parentSessionId`/`index` 仍可读）。纯 additive：老客户端忽略新字段；SSE 帧 +~110B。
 - **测试**：`test/state-passive.mjs` 增「新记录全字段 / 0.3 旧记录缺字段 null / 无记录 chain=null / 旧字段不变」四组断言。
 
+### 命名反转（第一个用户可见功能，未提交）
+
+- **行为**：新链交接后，旧会话改名「历史 N：<原名>」，新会话继承干净原名（不带序号）；第 2 次交接为「历史 2：X / 历史 1：X / X」，列表读起来是一条对话。旧链（已存在的「交接第 N 次：」链、0.3 旧 record、旧「交接：/接棒：」堆叠）继续旧命名，旧会话标题一个字符不改（链级 cutover，不迁移、不混用）。
+- **`lib/core/relay.js`**：新增 `MAX_TITLE_BYTES=80` 与 `truncateTitleUtf8`（与宿主 `session-title` 同口径的 UTF-8 安全截断）；`historyTitleOf(index, base, maxBytes?)` 支持预算——前缀先计入、超长只缩 base，不传时保持 0.4.3 纯函数行为。
+- **`lib/dsh/sessions.js`**：
+  - `handoffTitlePlanOf` 返回新增 `scheme`（`history-n`/`handoff-n`）与 `historyTitle`；有 record 时方案以 record 为准（旧记录 scheme=null → 旧链），无 record 时干净标题/「历史 N」→ 新链，「交接第 N 次」/旧前缀 → 旧链，读不到标题 → 保守旧链。
+  - `createHandoffSession` 接受可选 `plan`（文档/双写同一份）；子会话 record 的 `scheme` 改为本次链实际方案（新链 `history-n`）。
+  - 新增 `renameHistoryOf`：子会话建好后把旧会话改名「历史 N：<原名>」，成功后 `await sessions.flush`；改名失败只 warn 不阻断；当前标题已是目标（含宿主按更小预算截断）时跳过，同一链重复执行不重复加前缀。scheme=`handoff-n` 时不读标题服务、不改名。
+- **`lib/actions/handoff.js`**：交接编排在 `createHandoffSession` 之后调用 `renameHistoryOf`；父 record 写出新增 `scheme` + `titleSeq`（旧会话 rename 的 eventSeq），新链再写 `historyTitle`；父记录写完后再次 flush 旧会话，保证标题与 record 一起落盘。
+- **有意行为变化**：F2/F3 时期「父记录不写 scheme/titleSeq/historyTitle」的约束随本功能更新——父/子记录现在都写 `scheme` + `titleSeq`；F5 链不变量测试已改为断言新形状。
+- **测试**：新增 `test/handoff-naming.mjs`（第 1/2 次新链标题与序号、父/子 titleSeq 各取自己 rename、旧链 cutover 不改旧标题、0.3 旧记录不迁移、80 字节预算、幂等 guard、rename 失败降级含端到端不阻断）；更新 `test/handoff.mjs` 与 `test/relay-chain.mjs` 的父记录/标题期望；`test/harness/host.mjs` 支持 `sessionTitleText` 与函数式 `renameEventSeq`。
+
 ### 验证
 
-- `npm test` 全绿：**213 PASS / 0 FAIL**（历史基线：F1+F2 后 204 → F3 后 206 → F4 后 207；F5 链不变量测试 `test/relay-chain.mjs` 并入后 213）。
-- 未发布、未打 tag；0.5.0 用户功能（命名反转 / 接力条 / 双向跳转 / 自动归档）尚未实现。
+- `npm test` 全绿：**220 PASS / 0 FAIL**（历史基线：F1+F2 后 204 → F3 后 206 → F4 后 207 → F5 后 213；本次命名反转新增 7 组断言）。
+- 未 commit、未发布、未打 tag；0.5.0 剩余用户功能（接力条 / 双向跳转 / 自动归档）尚未实现。
 
 ## 0.4.2（2026-10-26 · 交接线保命补丁）
 

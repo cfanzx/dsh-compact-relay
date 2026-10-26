@@ -91,7 +91,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `core/markdown-lite.js` | `parseMarkdownLite`, `parseInlineLite` | **0.3.4（BUG-005）交接单轻量 markdown 解析**：标题/段落/有序无序列表/粗体/行内代码/代码块/分隔线；输出结构化 blocks+segments，不生成 HTML（XSS 内容原样当文本）；client 片段 `16-markdown.js` 构建时内联同一源码 |
 | `core/placeholders.js` | `isPlaceholderLine`, `isPlaceholderText` | 识别 `(none)`/无/N/A 等占位，防空壳文档/摘要 |
 | `core/pins.js` | `PIN_RECORD_TYPE`, `latestPinnedSeqs`, `clipRangeByPins` | 锁定：plugin record 快照、按锁定裁剪精压范围 |
-| `core/relay.js` | `RELAY_RECORD_TYPE`, `HISTORY_PREFIX`, `relayTitleOf`, `historyTitleOf`, `splitHandoffTitle` | **接力链命名/解析纯函数**：交接标题「交接第 N 次：<原名>」、历史标题「历史 N：<原名>」生成；`splitHandoffTitle` 解析出 `baseTitle` / `handedOff` / `scheme`（`handoff-n` / `history-n` / `legacy`），旧链字段名与文案不变 |
+| `core/relay.js` | `RELAY_RECORD_TYPE`, `HISTORY_PREFIX`, `MAX_TITLE_BYTES`, `relayTitleOf`, `historyTitleOf`, `truncateTitleUtf8`, `splitHandoffTitle` | **接力链命名/解析纯函数**：交接标题「交接第 N 次：<原名>」、历史标题「历史 N：<原名>」生成；`splitHandoffTitle` 解析出 `baseTitle` / `handedOff` / `scheme`（`handoff-n` / `history-n` / `legacy`），旧链字段名与文案不变；`truncateTitleUtf8` + `MAX_TITLE_BYTES=80` 给标题做 UTF-8 预算（前缀先计入、只缩 base），与宿主 `session-title` 同口径 |
 | `core/colors.js` | `DEFAULT_BASE`, `paletteForScheme` | 颜色纯数学：HSL 明度派生 + WCAG 对比度 ≥3:1、归一化、旧结构兼容 |
 | `core/errors.js` | `actionError`, `errorText`, `toActionResult` | 错误 → 用户可读文案的唯一映射（含原因附带与截断） |
 | `core/object.js` | `isPlainObject` | **普通对象判定的唯一来源**（config 合并 / 设置文件信封 / actions 深合并共用；非 null、typeof object、非数组） |
@@ -113,7 +113,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/handoff-writer.js` | `generateHandoffDoc` | 让模型写九段交接单；结构校验失败重试一次 |
 | `dsh/compact-transaction.js` | `replaceRangeWithSummary` | **唯一替换事务**：start → summary → replace → end |
 | `dsh/idle.js` | `runIdle` | `runMaintenance()` 封装 + busy/abort 映射 |
-| `dsh/sessions.js` | `createHandoffSession`, `handoffTitlePlanOf`, `childTitleOf`, `presetIdOf`, `sourceTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入；**followup 后往子会话写 relay record**（0.5.0 F3：ordinal/baseTitle/scheme/titleSeq，走 plugin record 通道）；链号优先读 record，旧会话才回退标题解析 |
+| `dsh/sessions.js` | `createHandoffSession`, `handoffTitlePlanOf`, `childTitleOf`, `renameHistoryOf`, `presetIdOf`, `sourceTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入；**followup 后往子会话写 relay record**（ordinal/baseTitle/scheme/titleSeq，走 plugin record 通道）；链号优先读 record，旧会话才回退标题解析；`handoffTitlePlanOf` 决定本次链的 scheme（干净标题/历史 N → 新链 `history-n`；交接第 N 次/旧前缀/0.3 旧记录 → 旧链 `handoff-n`）；`renameHistoryOf` 在子会话建好后把旧会话改名「历史 N：<原名>」（幂等 guard + flush，失败只 warn） |
 | `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`：对 SSE 订阅者去抖推送 `readState`；0.3.4 起**无论有无订阅者都维护最新状态缓存**（`latestState(sessionId)` → `{ratio, window, compressHint}`），供 systemPrompt 同步读取 |
 | `dsh/site-info.js` | `buildSiteSnapshot`, `gitInfo`, `pendingJobs` | 交接单现场快照（启动时长、git、后台任务、模型），只读 |
 | `dsh/handoff-files.js` | `listHandoffFiles`, `countHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限）；`countHandoffFiles` 供列表 `total`（0.3.4 BUG-006） |
@@ -421,22 +421,35 @@ Hero 新会话页，**不显示历史消息**。所以 M3 不用裸 `append` 注
 
 ---
 
-## 8.8 0.5.0 地基：relay record 双写与 `readState.chain`
+## 8.8 0.5.0 relay record 双写与 `readState.chain`（命名反转已实现）
 
 **为什么双写**：接力链的事实既要让「下一次从父会话交接」读到（父会话日志），也要让
-「子会话自己」知道「我是第几次、原名是什么」（子会话日志）。0.5.0 命名反转后，子会话
+「子会话自己」知道「我是第几次、原名是什么」（子会话日志）。命名反转后，子会话
 标题继承干净原名（`历史 N` 在旧会话那边），标题里不再有「交接第 N 次」——链号必须自带。
 同一跳交接因此写两条 `plugin:compact-relay/relay`（都是 `ignorable`，不进模型上下文、
 不算 token、压缩碰不到）：
 
 | 写在哪 | 谁写 | 字段 | 用途 |
 |---|---|---|---|
-| **父会话**日志 | `actions/handoff.js`（`createHandoffSession` 之后） | `parentId`/`childId`/`ordinal`/`at`/`atIso` + 0.3 旧名 `parentSessionId`/`index` + `path`/`planId`/`title`/`baseTitle`；**不写** `scheme`/`titleSeq`/`historyTitle` | 父会话的下一次交接读它续号；带交接单路径 |
-| **子会话**日志 | `dsh/sessions.js` `createHandoffSession`（`followup` 后、`flush` 前） | `parentId`/`childId`/`ordinal`/`baseTitle`/`title`/`scheme='handoff-n'`/`titleSeq`/`at`/`atIso`；**不写** `path` | 子会话自带链号；0.5.0 标题不带序号后仍能算出「下次第 N+1 次」 |
+| **父会话**日志 | `actions/handoff.js`（子会话建好、旧会话改名之后） | `parentId`/`childId`/`ordinal`/`at`/`atIso` + 0.3 旧名 `parentSessionId`/`index` + `path`/`planId`/`title`/`baseTitle` + `scheme`/`titleSeq`；新链再带 `historyTitle` | 父会话的下一次交接读它续号；带交接单路径；`titleSeq` 是旧会话 rename 的 eventSeq，`historyTitle` 是旧会话改名后的「历史 N」 |
+| **子会话**日志 | `dsh/sessions.js` `createHandoffSession`（`followup` 后、`flush` 前） | `parentId`/`childId`/`ordinal`/`baseTitle`/`title`/`scheme`（本次链的 `history-n`/`handoff-n`）/`titleSeq`（子会话 rename 的 eventSeq）/`at`/`atIso`；**不写** `path` | 子会话自带链号；新标题不带序号后仍能算出「下次第 N+1 次」 |
 
-同一跳的两条记录，`ordinal`/`childId`/`baseTitle` 必须相同（`test/relay-chain.mjs` 锁住）。
-父记录形状刻意保持 0.3/0.4 现状：F2 只放行**读**新字段，不改现网写出内容；子会话多出的
-那条记录是 0.5.0 地基里唯一新增的写入。
+同一跳的两条记录，`ordinal`/`childId`/`baseTitle`/`scheme` 必须相同（`test/relay-chain.mjs` 锁住）。
+0.5.0 命名反转**有意改变**了父记录写出形状：F2/F3 当时的「父记录不写 scheme/titleSeq」是
+地基期约束，本功能起父/子记录都写 `scheme` + `titleSeq`（F5 期望已随之更新）。
+
+**命名反转落点**（`dsh/sessions.js` + `actions/handoff.js`）：
+
+1. `handoffTitlePlanOf` 先看会话自己的 relay record：`scheme='history-n'` 才走新链；0.3/0.4
+   旧记录（scheme 为 null）→ 旧链（链级 cutover，不迁移）。没有记录才回退标题解析：干净
+   标题/「历史 N」→ 新链；「交接第 N 次」/旧「交接」「接棒」堆叠 → 旧链；读不到标题 →
+   保守按旧链。
+2. 新链：子会话标题 = 干净原名；子会话建好后 `renameHistoryOf` 把旧会话改名
+   「历史 N：<原名>」并 flush。改名失败只 warn、不阻断交接；当前标题已是本次目标时跳过
+   （重复执行不叠前缀）。旧链：完全不碰旧会话标题。
+3. 80 字节预算：`historyTitleOf(..., MAX_TITLE_BYTES)` 先算前缀、只缩 base；子会话原名同样
+   按 `MAX_TITLE_BYTES` 截断，避免宿主 `session-title` 把「历史 N：」前缀截掉。
+4. `handoff.js` 在父记录写完后 flush 旧会话，保证「历史 N」标题和父记录一起落盘。
 
 **读侧**（`dsh/relay.js`）：
 

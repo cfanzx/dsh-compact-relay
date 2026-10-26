@@ -282,7 +282,12 @@ export function createPluginDeps({ ctx, engine, handoffDir, cfg, lock } = {}) {
  * @param {object} options.llm createFakeLlm() 的返回值（必传；route 已在测试侧配好）
  * @param {object} [options.engine]
  * @param {boolean} [options.childHasFollowup] 新会话 agent 是否支持 followup（默认 true）
- * @param {number} [options.renameEventSeq] rename 返回的标题事件 seq（真实 DSH 快照带 eventSeq；默认不返回）
+ * @param {number|Function} [options.renameEventSeq] rename 返回的标题事件 seq（真实 DSH 快照带 eventSeq；
+ *   默认不返回）。传函数时按 `{session,title,call}`（call 从 1 起）返回每次 rename 的 seq，
+ *   便于断言父/子记录各自的 titleSeq。
+ * @param {string|Function} [options.renameBrokenFor] 指定会话（id 或 `(session,title)=>bool`）的 rename 抛错
+ *   （模拟旧会话非 live / 标题服务异常）；不传则所有 rename 正常
+ * @param {string} [options.sessionTitleText] sessionTitle.get() 返回的会话标题（默认「原会话标题」）
  * @param {boolean} [options.agentPresetsBroken] agentPresets.resolve 是否抛错
  * @param {boolean} [options.registryBroken] workspaceRegistry.create 是否抛错
  * @param {boolean} [options.reset] 建 ctx 时是否清插件级缓存（默认 true，避免用例串味）
@@ -294,6 +299,8 @@ export function createHandoffHost({
   engine = createFakeEngine(),
   childHasFollowup = true,
   renameEventSeq,
+  renameBrokenFor,
+  sessionTitleText = '原会话标题',
   agentPresetsBroken = false,
   registryBroken = false,
   reset = true,
@@ -382,13 +389,24 @@ export function createHandoffHost({
         case 'sessionTitle':
           return {
             get() {
-              return { title: '原会话标题' };
+              return { title: sessionTitleText };
             },
             rename(session, title) {
+              const broken =
+                typeof renameBrokenFor === 'function'
+                  ? renameBrokenFor(session, title) === true
+                  : renameBrokenFor === session.id;
+              if (broken) throw new Error('session is not live in this store');
               record.renames.push({ sessionId: session.id, title });
               // 真实 DSH 0.2：rename 返回折叠快照（含 eventSeq），不是日志事件。
-              // 默认替身不返回（覆盖「取不到就 null」）；需要数字路径的用例传 renameEventSeq。
-              return renameEventSeq === undefined ? undefined : { title, eventSeq: renameEventSeq };
+              // 默认替身不返回（覆盖「取不到就 null」）；需要数字路径的用例传 renameEventSeq，
+              // 需要区分父/子 titleSeq 时传函数（记录被 rename 的顺序从 1 起）。
+              if (renameEventSeq === undefined) return undefined;
+              const eventSeq =
+                typeof renameEventSeq === 'function'
+                  ? renameEventSeq({ session, title, call: record.renames.length })
+                  : renameEventSeq;
+              return { title, eventSeq };
             },
           };
         case 'sessionProjections':
