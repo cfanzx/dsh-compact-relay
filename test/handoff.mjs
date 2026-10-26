@@ -247,6 +247,10 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(relay.ordinal, 1, '首次交接 ordinal=1');
   assert.equal(Number.isInteger(relay.at), true);
   assert.equal(typeof relay.atIso, 'string', '交接记录要带可读的本地时间');
+  // 0.4.3 F2：新字段只放行读取；父会话 relay 记录的写出内容保持原样（现网数据安全）。
+  assert.equal('scheme' in relay, false);
+  assert.equal('titleSeq' in relay, false);
+  assert.equal('historyTitle' in relay, false);
   assert.equal(doc.includes('- 交接序号：第 1 次交接'), true, '交接单头要写「第 N 次交接」');
   assert.equal(result.message.includes('#child=' + result.childId), true, '正文要带结构化 childId 兜底');
 

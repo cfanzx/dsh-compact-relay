@@ -9,6 +9,10 @@
  *  - relay 记录 canonical 字段 parentId/childId/ordinal/at/atIso；
  *  - 0.3 旧记录（parentSessionId/index）读出来补齐 canonical 字段，新旧字段一致。
  *
+ * 0.4.3 F2 覆盖：
+ *  - 白名单放行 scheme（handoff-n/history-n）/titleSeq（正整数）/historyTitle（非空字符串）；
+ *  - 旧记录三个新字段读成 null；非法值回落 null，不连坐必填字段。
+ *
  * 集成（预览→确认→落盘内容生效、程序段被拒、链式第 2 次交接）在 test/handoff.mjs。
  */
 import assert from 'node:assert/strict';
@@ -114,6 +118,10 @@ assert.equal(newRecord.atIso, '2026-10-24T21:30:00+08:00');
 assert.equal(newRecord.parentSessionId, 'session-parent', '旧字段别名同步（兼容 0.3）');
 assert.equal(newRecord.index, 2);
 assert.equal(newRecord.path, '/tmp/handoff-1.md');
+// 0.4.3 F2：旧记录没有新字段 → 一律 null（旧字段读取语义不变）。
+assert.equal(newRecord.scheme, null, '旧记录没有 scheme → null');
+assert.equal(newRecord.titleSeq, null, '旧记录没有 titleSeq → null');
+assert.equal(newRecord.historyTitle, null, '旧记录没有 historyTitle → null');
 
 // 0.3 旧记录：只有 parentSessionId/index → 读出来补齐 canonical 字段。
 const legacy = normalizeRelayRecord({ parentSessionId: 'session-old', childId: 'session-kid', index: 1, at: 123 });
@@ -121,6 +129,44 @@ assert.equal(legacy.parentId, 'session-old');
 assert.equal(legacy.ordinal, 1);
 assert.equal(legacy.index, 1);
 assert.equal(legacy.atIso, null, '旧记录没有 ISO 时间就 null（不猜）');
+assert.equal(legacy.scheme, null);
+assert.equal(legacy.titleSeq, null);
+assert.equal(legacy.historyTitle, null);
+
+// 0.4.3 F2：0.5.0 命名反转的预留字段能读回（只放行，不改变必填校验）。
+const namedRecord = normalizeRelayRecord({
+  parentId: 'session-parent',
+  childId: 'session-child',
+  ordinal: 2,
+  at: 1_730_000_000_000,
+  scheme: 'history-n',
+  titleSeq: 2,
+  historyTitle: '历史 2：原题',
+});
+assert.equal(namedRecord.scheme, 'history-n');
+assert.equal(namedRecord.titleSeq, 2);
+assert.equal(namedRecord.historyTitle, '历史 2：原题');
+assert.equal(namedRecord.ordinal, 2, '新字段不影响必填字段');
+
+const handoffScheme = normalizeRelayRecord({ childId: 'c', ordinal: 1, scheme: 'handoff-n' });
+assert.equal(handoffScheme.scheme, 'handoff-n');
+assert.equal(handoffScheme.titleSeq, null, '没给 titleSeq 仍为 null');
+assert.equal(handoffScheme.historyTitle, null);
+
+// 非法可选值 → null，不连坐其它字段。scheme 只认两种新标题，legacy 不写进记录。
+for (const scheme of ['legacy', 'bogus', '', 1, null, undefined]) {
+  const record = normalizeRelayRecord({ childId: 'c', ordinal: 1, scheme });
+  assert.equal(record.scheme, null, `scheme 只认 handoff-n/history-n：${String(scheme)}`);
+  assert.equal(record.ordinal, 1, '非法 scheme 不影响必填字段');
+}
+for (const titleSeq of [0, -1, 1.5, '3', NaN, null]) {
+  const record = normalizeRelayRecord({ childId: 'c', ordinal: 1, titleSeq });
+  assert.equal(record.titleSeq, null, `titleSeq 必须是正整数：${String(titleSeq)}`);
+}
+for (const historyTitle of ['', 42, null, {}, []]) {
+  const record = normalizeRelayRecord({ childId: 'c', ordinal: 1, historyTitle });
+  assert.equal(record.historyTitle, null, 'historyTitle 必须非空字符串');
+}
 
 // 不合法记录：没有 childId / 没有序号 → null。
 assert.equal(normalizeRelayRecord({ parentId: 'p', ordinal: 1 }), null);
@@ -140,4 +186,5 @@ assert.equal(fragment.includes('程序生成的段不可改') || fragment.includ
 console.log('PASS  0.4 P2-1 可编辑段：只有「约束/下一步」，空值回落、超长/非法字段 code=edits');
 console.log('PASS  0.4 P2-1 九段结构：composeHandoffText 仍固定九段顺序，程序段不许覆盖');
 console.log('PASS  0.4 P2-2 relay 元数据：parentId/childId/ordinal/at/atIso + 旧记录兼容');
+console.log('PASS  0.4.3 F2 relay 字段：scheme/titleSeq/historyTitle 白名单放行，旧记录 null、非法值回落');
 console.log('PASS  0.4 P2-1 客户端：交接预览卡有可编辑两段入口（bundle 已重建）');
