@@ -649,15 +649,28 @@ function agentOf(session) {
     scheme: 'history-n',
     path: firstHop.result.path,
   }, 'next 接管原来「链字段」里的出站信息');
-  assert.deepEqual(sourceState.capabilities, { unarchive: false }, '宿主没有 unarchiveSession → false');
+  // 0.5.2 L 项：capabilities 增加 forceArchive（宿主有没有 archiveSession）；这个替身两样都没有。
+  assert.deepEqual(
+    sourceState.capabilities,
+    { unarchive: false, forceArchive: false },
+    '宿主没有 unarchiveSession/archiveSession → 两个能力位都 false',
+  );
 }
 
 // 6.5 DCR-03：capabilities.unarchive 反映服务端 recover 接缝是否可用。
 {
   const capable = await readState(stateDeps({ unarchive: true }), { agent: agentOf(source) });
-  assert.deepEqual(capable.capabilities, { unarchive: true }, '宿主有 workspaceRegistry.unarchiveSession → true');
+  assert.deepEqual(
+    capable.capabilities,
+    { unarchive: true, forceArchive: false },
+    '宿主有 workspaceRegistry.unarchiveSession → unarchive=true（没有 archiveSession → forceArchive=false）',
+  );
   const noRegistry = await readState(stateDeps(), { agent: agentOf(thirdHop.child) });
-  assert.deepEqual(noRegistry.capabilities, { unarchive: false }, '没有 registry → false（客户端隐藏恢复入口）');
+  assert.deepEqual(
+    noRegistry.capabilities,
+    { unarchive: false, forceArchive: false },
+    '没有 registry → 两个能力位都 false（客户端隐藏恢复/强制归档入口）',
+  );
 }
 
 console.log('PASS  0.5.1 DCR-01 readState：chain=本会话入站记录、next=出站投影、relay 旧字段不变、capabilities.unarchive');

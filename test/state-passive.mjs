@@ -360,7 +360,12 @@ function sessionWithRelay(id, data) {
     'next = 最近一条出站记录的只读投影（父→子入口/父记录补 path 用）',
   );
   // 0.5.1 DCR-03：宿主没有 unarchiveSession → 客户端据此隐藏「恢复旧会话」。
-  assert.deepEqual(state.capabilities, { unarchive: false }, '没有 registry.unarchiveSession → unarchive=false');
+  // 0.5.2 L 项：capabilities 增加 forceArchive（宿主有没有 archiveSession）。
+  assert.deepEqual(
+    state.capabilities,
+    { unarchive: false, forceArchive: false },
+    '没有 registry 的归档接缝 → 两个能力位都 false',
+  );
 }
 
 {
@@ -400,7 +405,11 @@ function sessionWithRelay(id, data) {
   });
   assert.equal(wrongArchive.parentArchived, false, 'parentArchived 只看入站 parentId，不被出站 childId 带偏');
   const capable = await readState(depsOf({ liveSession: mid, unarchive: true }), { sessionId: mid.id });
-  assert.deepEqual(capable.capabilities, { unarchive: true }, '宿主有 unarchiveSession → unarchive=true');
+  assert.deepEqual(
+    capable.capabilities,
+    { unarchive: true, forceArchive: false },
+    '宿主有 unarchiveSession → unarchive=true（没有 archiveSession → forceArchive=false）',
+  );
 }
 
 {
