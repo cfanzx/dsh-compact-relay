@@ -603,8 +603,8 @@ test('config: 窗口比例阈值 + 兼容旧绝对值 + 校验', () => {
   assert.equal(cfg.thresholds.compactRatio, 0.4);
   assert.equal(cfg.thresholds.handoffRatio, 0.6);
   assert.equal(cfg.dev.testRangeNodes, 3);
-  assert.equal(cfg.summary.maxTokens, 8192);
-  assert.equal(cfg.handoff.maxTokens, 8192);
+  assert.equal(cfg.summary.maxTokens, 16384);
+  assert.equal(cfg.handoff.maxTokens, 16384);
   // 显式比例优先
   const custom = resolveConfig({ thresholds: { compactRatio: 0.3, handoffRatio: 0.55 } });
   assert.equal(custom.thresholds.compactRatio, 0.3);

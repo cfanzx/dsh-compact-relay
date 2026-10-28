@@ -215,8 +215,8 @@ test('M3 全流程：先精压 → 写成六段文档 → 建子会话 → follo
   assert.equal(session.surface.nodes.length, 2, 'system + 一条摘要');
   assert.deepEqual(record.llmCalls.map((call) => call.kind), ['summary', 'handoff'], '先摘要后交接文档');
   for (const call of record.llmCalls) {
-    assert.equal(call.reasoningEffort, 'off', '侧调用不该继承源会话的 reasoningEffort（会把 maxTokens 吃光）');
-    assert.equal(call.maxTokens, 8192);
+    assert.equal(call.reasoningEffort, 'max', 'P1：侧调用沿用主请求的 reasoningEffort 才能命中前缀缓存');
+    assert.equal(call.maxTokens, 16384);
   }
 
   // 4) 新会话：同工作区 / 同 preset / 同模型路由
@@ -656,7 +656,7 @@ test('M3：摘要输出被截断 → 带“写短”提示自动重试一次后�
   assert.equal(typeof result.childId, 'string');
   const summaryCalls = record.llmCalls.filter((call) => call.kind === 'summary');
   assert.equal(summaryCalls.length, 2, '截断后应重试一次');
-  assert.equal(summaryCalls[0].reasoningEffort, 'off');
+  assert.equal(summaryCalls[0].reasoningEffort, 'max');
   const retryInstruction = summaryCalls[1].messages.at(-1).content.map((block) => block.text).join('\n');
   assert.equal(retryInstruction.includes('截断'), true, '重试指令要说明为什么被拒');
   assert.equal(session.log.some((event) => event.type === 'compaction/end' && event.data?.error !== undefined), false);
@@ -670,11 +670,13 @@ test('M3：交接文档输出被截断 → 自动重试一次后成功', async (
   assert.equal(typeof result.childId, 'string');
   const handoffCalls = record.llmCalls.filter((call) => call.kind === 'handoff');
   assert.equal(handoffCalls.length, 2);
-  assert.equal(handoffCalls[1].reasoningEffort, 'off');
+  assert.equal(handoffCalls[1].reasoningEffort, 'max');
 });
 
 test('P2-5：非推理模型不传 reasoningEffort（不再硬编码 off）', async () => {
   const session = baseSourceSession();
+  // 非推理模型的真实 header 里不会有 reasoningEffort；固定住这个形状再验兜底分支。
+  session.requestHeader = () => ({ config: { provider: 'mock', model: 'mock-model' } });
   const { ctx, engine, record } = makeCtx({ reasoningSupport: false });
   const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
   await handoff(deps, { agent: createAgent(session) });
@@ -682,6 +684,18 @@ test('P2-5：非推理模型不传 reasoningEffort（不再硬编码 off）', as
   const handoffCall = record.llmCalls.find((call) => call.kind === 'handoff');
   assert.equal(summaryCall.reasoningEffort, undefined, '非推理模型不该传 reasoningEffort');
   assert.equal(handoffCall.reasoningEffort, undefined, '交接单调用同理');
+});
+
+test('P1 cache 对齐：摘要/交接单沿用主请求的 reasoningEffort（不切 thinking）', async () => {
+  const session = baseSourceSession();
+  session.requestHeader = () => ({ config: { provider: 'mock', model: 'mock-model', reasoningEffort: 'high' } });
+  const { ctx, engine, record } = makeCtx({});
+  const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
+  await handoff(deps, { agent: createAgent(session) });
+  const summaryCall = record.llmCalls.find((call) => call.kind === 'summary');
+  const handoffCall = record.llmCalls.find((call) => call.kind === 'handoff');
+  assert.equal(summaryCall.reasoningEffort, 'high', '摘要调用必须与主请求同档，否则缓存前缀在 thinking 开关处断开');
+  assert.equal(handoffCall.reasoningEffort, 'high', '交接单调用同理（它回放整段 surface）');
 });
 
 test('A2 调用壳：超时 → timeout；取消 → cancelled', async () => {
