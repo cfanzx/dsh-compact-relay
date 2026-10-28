@@ -174,6 +174,12 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   const unarchiveCalls = [];
   let stateResponse = { ok: true, chain: null };
   let docResponse = { ok: true, name: 'handoff-x.md', path: '/tmp/handoffs/handoff-x.md', content: '# 交接单\n- 条目' };
+  // 0.5.2 L 项：强制归档动作的响应（默认成功；测试可改成 500 或 status:'pinned'）。
+  let forceArchiveResponse = {
+    ok: true,
+    status: 'archived',
+    note: '旧会话已归档（可在新会话输入框上方「已接力自 …」→「恢复旧会话」找回；侧栏视图选「全部对话（显示已归档）」，再对该会话点「取消归档」）。',
+  };
   // 0.5.1 批 2：交接预览响应（九段草稿 + 就绪 + 可编辑两段）。
   const previewResponse = {
     ok: true,
@@ -252,6 +258,16 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
           jsonResponse(200, { ok: true, message: '交接完成', childId: 'child-session-1', path: '/tmp/handoffs/handoff-x.md' }),
         );
       }
+      // 0.5.2 L 项：强制归档（默认成功；测试可换成失败/置顶响应）。
+      if (body.action === 'force-archive') {
+        const response =
+          typeof forceArchiveResponse === 'function' ? forceArchiveResponse(body) : forceArchiveResponse;
+        return Promise.resolve(
+          response !== null && typeof response === 'object' && typeof response.status === 'number'
+            ? jsonResponse(response.status, response.payload ?? response)
+            : jsonResponse(200, response),
+        );
+      }
       // recoverFails / recoverFailTimes：插件 HTTP recover 通道失败（测双通道重试）。
       const failing = recoverFails || actionCalls.length <= recoverFailTimes;
       return Promise.resolve(
@@ -316,6 +332,10 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   function setDoc(response) {
     docResponse = response;
   }
+  /** 0.5.2 L 项：设置强制归档的响应（直接传 payload 默认 200；`{status,payload}` 可模拟失败）。 */
+  function setForceArchiveResponse(response) {
+    forceArchiveResponse = response;
+  }
   /**
    * 0.5.1 DCR-05：设置 `/api/compact-relay-chain` 的响应。
    * 传 `{status, payload}` 可模拟老宿主（404）；直接传 payload 默认 200。
@@ -351,7 +371,7 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   function fire(type, event) {
     for (const handler of listeners[type] ?? []) handler(event);
   }
-  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, failState, healState, mount, mountLeft, fire };
+  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, setForceArchiveResponse, failState, healState, mount, mountLeft, fire };
 }
 
 const SESSION_ID = 'session-new-0001';
@@ -403,6 +423,14 @@ test('客户端产物：input.dock 注册 + 接力条标记 + 主题 token 都�
     "'data-cr-relay-chain-doc'",
     "'data-cr-relay-chain-retry'",
     "'data-cr-relay-next'",
+    // 0.5.2 L 项：强制归档旧会话（显式二次确认；默认不强制）
+    '强制归档旧会话（会停止后台任务）',
+    '会停止旧会话上正在跑的任务',
+    "'data-cr-force-archive'",
+    "'data-cr-force-warning'",
+    "'data-cr-force-run'",
+    "action: 'force-archive'",
+    'confirmStop: true',
   ]) {
     assert.ok(bundle.includes(marker), `bundle 应包含 ${marker}`);
   }
@@ -679,7 +707,7 @@ test('未归档：不显示恢复入口，「回到原会话」直接 open', asy
   findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
   await renderer.settle();
   const actions = findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] !== undefined).map((node) => node.props['data-cr-relay-action']);
-  assert.deepEqual(actions, ['doc', 'parent', 'chain', 'roadmap'], '未归档时不应出现恢复入口');
+  assert.deepEqual(actions, ['doc', 'parent', 'force-archive', 'chain', 'roadmap'], '未归档时不应出现恢复入口（但应有强制归档入口）');
   findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'parent')[0].props.onClick();
   await renderer.settle();
   assert.deepEqual(harness.unarchiveCalls, [], '未归档时不应调用 unarchive');
@@ -1071,6 +1099,36 @@ test('交接预览：选「只交接，保留置顶」→ archive:false（旧会
   const handoff = harness.actionCalls.filter((call) => call.action === 'handoff').at(-1);
   assert.equal(handoff.archive, false);
   assert.equal(handoff.confirmUnpin, undefined, '不归档就不需要取消置顶确认');
+});
+
+test('交接预览：草稿预览框不许被弹窗 flex 压成 0 高（0.5.2 UI 修复回归）', async () => {
+  const harness = loadBundle();
+  const { renderer, trigger } = await mountIndicator(harness);
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'handoff')[0].props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await renderer.settle();
+
+  const panel = findByAttr(renderer.tree, 'data-cr-handoff-preview');
+  assert.ok(panel !== null, '应打开交接预览');
+
+  // 真机 bug（2026-10-27）：弹窗是 maxHeight 的 flex column，子项默认 flex-shrink:1；
+  // 草稿框是 overflow:auto 的滚动容器、自动最小尺寸为 0，于是被压成 14px 高的一条缝
+  // （内容高度 0，只剩边框 + padding），九段草稿完全看不见，弹窗自己反而不滚。
+  // 结构契约：内容包裹层保持自然高度（flexShrink:0），超出 maxHeight 由弹窗滚动；
+  // 草稿框自己也不许被压（防御性 flexShrink:0），内容超出时只在自己的 220 上限内滚。
+  const body = findByAttr(renderer.tree, 'data-cr-handoff-body');
+  assert.ok(body !== null, '交接预览要有内容包裹层标记 data-cr-handoff-body');
+  assert.equal(body.props.style.flexShrink, 0, 'body 必须 flexShrink:0，否则 maxHeight 会把草稿框压没');
+
+  const draft = findByAttr(renderer.tree, 'data-cr-handoff-draft');
+  assert.ok(draft !== null, '交接预览要有草稿框标记 data-cr-handoff-draft');
+  assert.equal(draft.props.style.flexShrink, 0, '草稿框必须 flexShrink:0（任何 flex 上下文都不许压它）');
+  assert.equal(draft.props.style.maxHeight, 220, '草稿框自身的 220 内部滚动上限保持');
+  assert.equal(draft.props.style.overflow, 'auto', '草稿内容超出时在框内滚动，而不是撑爆弹窗');
+  assert.ok(textOf(draft).includes('完成批 2'), `草稿框要真的渲染出草稿文本：${textOf(draft).slice(0, 120)}`);
 });
 
 test('交接预览：取消勾选归档 → 不弹置顶提示，确认按钮变「不归档」', async () => {
@@ -1573,13 +1631,212 @@ test('中段会话：既有「回到原会话」也有「去新会话」，还�
   const renderer = await mountBar(harness);
   findByAttr(renderer.tree, 'data-cr-relay-bar').props.onClick({ currentTarget: rowElement });
   await renderer.settle();
-  assert.deepEqual(actionKeys(renderer.tree), ['doc', 'next', 'parent', 'chain', 'roadmap'], '两个方向 + 完整链都在');
+  assert.deepEqual(
+    actionKeys(renderer.tree),
+    ['doc', 'next', 'parent', 'force-archive', 'chain', 'roadmap'],
+    '两个方向 + 强制归档 + 完整链都在',
+  );
 
   // 菜单已经开着：直接点「完整交接链」，不要再点一次接力条（那会关掉菜单）。
   findAll(renderer.tree, (node) => node.props?.['data-cr-relay-action'] === 'chain')[0].props.onClick();
   await renderer.settle();
   assert.equal(chainRows(renderer.tree).length, 1, '中段会话只列出它自己的祖先');
   assert.ok(textOf(chainRows(renderer.tree)[0]).includes('历史 2：原会话标题'));
+});
+
+/* ------------------------------------------------------------------ *
+ * 8.5 0.5.2 L 项：强制归档旧会话（入口 / 二次确认 / stopActivity 透传 / 失败不静默）
+ * ------------------------------------------------------------------ */
+
+const forceItemOf = (tree) => findAll(tree, (node) => node.props?.['data-cr-relay-action'] === 'force-archive')[0] ?? null;
+const forcePanelOf = (tree) => findByAttr(tree, 'data-cr-force-archive');
+const forceActionOf = (tree, attr) => findByAttr(tree, attr);
+
+/** 打开接力条菜单（带 parentArchived / capabilities / parentPinned 等 state 覆盖）。 */
+async function mountForceMenu(overrides = {}) {
+  const harness = loadBundle();
+  harness.setState({ ok: true, chain: CHAIN, ...overrides });
+  const renderer = await mountBar(harness);
+  await openMenu(harness, renderer);
+  return { harness, renderer };
+}
+
+test('强制归档入口：旧会话未归档时菜单出现「强制归档旧会话（会停止后台任务）」，且默认不发请求', async () => {
+  const { harness, renderer } = await mountForceMenu({
+    parentArchived: false,
+    capabilities: { unarchive: true, forceArchive: true },
+  });
+
+  const item = forceItemOf(renderer.tree);
+  assert.ok(item !== null, '未归档的旧会话应给出「强制归档」出路');
+  assert.ok(textOf(item).includes('强制归档旧会话（会停止后台任务）'), `入口文案不对：${textOf(item)}`);
+  assert.equal(item.props.disabled, false);
+  assert.deepEqual(
+    harness.actionCalls.filter((call) => call.action === 'force-archive'),
+    [],
+    '默认不强制：只渲染菜单不能自动归档/停任务',
+  );
+});
+
+test('强制归档：点入口只出二次确认（不发请求），确认文案明说会停止旧会话上的任务', async () => {
+  const { harness, renderer } = await mountForceMenu({ parentArchived: false });
+
+  forceItemOf(renderer.tree).props.onClick();
+  await renderer.settle();
+
+  const panel = forcePanelOf(renderer.tree);
+  assert.ok(panel !== null, '应出现强制归档确认面板');
+  assert.equal(panel.props['data-cr-force-phase'], 'confirm');
+  assert.equal(panel.props['data-cr-force-target'], OLD_SESSION_ID, '确认面板要指向旧会话（不是当前会话）');
+  assert.ok(textOf(panel).includes('会停止旧会话上正在跑的任务'), `确认文案必须写清破坏性后果：${textOf(panel)}`);
+  assert.ok(textOf(panel).includes('强制归档（停止任务）'));
+  assert.ok(textOf(panel).includes('默认自动归档'), '要说明默认行为不变（活跃时保留可见）');
+  assert.deepEqual(
+    harness.actionCalls.filter((call) => call.action === 'force-archive'),
+    [],
+    '二次确认阶段不能发请求',
+  );
+
+  // 取消：回到主列表，仍然什么都不做。
+  findByAttr(renderer.tree, 'data-cr-force-cancel').props.onClick();
+  await renderer.settle();
+  assert.equal(forcePanelOf(renderer.tree), null, '取消后确认面板应关闭');
+  assert.ok(forceItemOf(renderer.tree) !== null, '取消后回到主列表，入口还在');
+  assert.deepEqual(harness.actionCalls.filter((call) => call.action === 'force-archive'), []);
+});
+
+test('强制归档：确认后 POST action=force-archive + confirmStop:true，成功显示现有归档文案并更新状态', async () => {
+  const { harness, renderer } = await mountForceMenu({ parentArchived: false });
+
+  forceItemOf(renderer.tree).props.onClick();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-force-run').props.onClick();
+  await renderer.settle();
+
+  assert.deepEqual(
+    harness.actionCalls.filter((call) => call.action === 'force-archive'),
+    [{ action: 'force-archive', sessionId: OLD_SESSION_ID, confirmStop: true }],
+    '确认后必须带 confirmStop:true（服务端据此允许 stopActivity）',
+  );
+  const panel = forcePanelOf(renderer.tree);
+  assert.ok(panel !== null, '应出现结果面板');
+  assert.equal(panel.props['data-cr-force-phase'], 'done');
+  const note = textOf(findByAttr(renderer.tree, 'data-cr-force-note'));
+  assert.ok(note.includes('旧会话已归档'), `成功文案沿用 handoffArchiveNoteOf：${note}`);
+  assert.ok(note.includes('恢复旧会话'), '成功文案必须告诉用户恢复入口');
+  assert.equal(
+    findByAttr(renderer.tree, 'data-cr-relay-bar').props['data-cr-relay-parent-archived'],
+    'true',
+    '成功后本地归档状态更新',
+  );
+
+  // 返回主列表：旧会话已归档 → 强制入口消失，恢复入口出现。
+  findByAttr(renderer.tree, 'data-cr-force-done-back').props.onClick();
+  await renderer.settle();
+  assert.equal(forceItemOf(renderer.tree), null, '已归档后不再显示强制归档入口');
+  assert.ok(actionKeys(renderer.tree).includes('unarchive'), '已归档后应能恢复旧会话');
+});
+
+test('强制归档失败：可读错误留在面板里（不静默、不假装成功），可重试', async () => {
+  const { harness, renderer } = await mountForceMenu({ parentArchived: false });
+  harness.setForceArchiveResponse({
+    status: 500,
+    payload: { ok: false, code: 'force-archive', message: '强制归档失败：job runner 不可用' },
+  });
+
+  forceItemOf(renderer.tree).props.onClick();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-force-run').props.onClick();
+  await renderer.settle();
+
+  const panel = forcePanelOf(renderer.tree);
+  assert.equal(panel.props['data-cr-force-phase'], 'error', '失败要停在错误面板，不能静默关闭');
+  const errorText = textOf(findByAttr(renderer.tree, 'data-cr-force-error'));
+  assert.ok(errorText.includes('强制归档失败'), `必须显示可读错误：${errorText}`);
+  assert.ok(errorText.includes('job runner 不可用'), `必须带具体原因：${errorText}`);
+  assert.equal(
+    findByAttr(renderer.tree, 'data-cr-relay-bar').props['data-cr-relay-parent-archived'],
+    'false',
+    '失败不能把旧会话标成已归档',
+  );
+
+  // 重试：再次发请求（同一目标），仍失败也不崩。
+  findByAttr(renderer.tree, 'data-cr-force-retry').props.onClick();
+  await renderer.settle();
+  assert.equal(
+    harness.actionCalls.filter((call) => call.action === 'force-archive').length,
+    2,
+    '重试应重新发请求',
+  );
+  assert.equal(forcePanelOf(renderer.tree).props['data-cr-force-phase'], 'error');
+});
+
+test('强制归档：旧会话置顶时确认卡写明「归档会取消置顶」，请求带 confirmUnpin:true', async () => {
+  const { harness, renderer } = await mountForceMenu({ parentArchived: false, parentPinned: true });
+
+  forceItemOf(renderer.tree).props.onClick();
+  await renderer.settle();
+  const panel = forcePanelOf(renderer.tree);
+  const pinLine = textOf(findByAttr(renderer.tree, 'data-cr-force-pin'));
+  assert.ok(pinLine.includes('旧会话已在侧栏置顶'), `置顶提示缺失：${pinLine}`);
+  assert.ok(pinLine.includes('归档会同时取消置顶'), `必须说明归档会取消置顶：${pinLine}`);
+  assert.ok(textOf(panel).includes('会停止旧会话上正在跑的任务'), '置顶时同样要写清会停止任务');
+
+  findByAttr(renderer.tree, 'data-cr-force-run').props.onClick();
+  await renderer.settle();
+  assert.deepEqual(
+    harness.actionCalls.filter((call) => call.action === 'force-archive'),
+    [{ action: 'force-archive', sessionId: OLD_SESSION_ID, confirmStop: true, confirmUnpin: true }],
+    '置顶已确认时一并传 confirmUnpin:true',
+  );
+});
+
+test('强制归档：服务端回报 pinned（状态过期）→ 不假装成功，给「仍然归档（取消置顶）」重发', async () => {
+  const { harness, renderer } = await mountForceMenu({ parentArchived: false, parentPinned: false });
+  harness.setForceArchiveResponse((body) =>
+    body.confirmUnpin === true
+      ? { ok: true, status: 'archived', note: '旧会话已归档（可在新会话「恢复旧会话」找回）。' }
+      : {
+          ok: true,
+          status: 'pinned',
+          note: '旧会话已置顶，本次未自动归档（归档会取消置顶；如要归档，可在交接确认里选「交接并归档（取消置顶）」，或先取消置顶）。',
+        },
+  );
+
+  forceItemOf(renderer.tree).props.onClick();
+  await renderer.settle();
+  findByAttr(renderer.tree, 'data-cr-force-run').props.onClick();
+  await renderer.settle();
+
+  const pinnedNote = textOf(findByAttr(renderer.tree, 'data-cr-force-note'));
+  assert.ok(pinnedNote.includes('归档会取消置顶'), `置顶文案沿用现有：${pinnedNote}`);
+  assert.equal(
+    findByAttr(renderer.tree, 'data-cr-relay-bar').props['data-cr-relay-parent-archived'],
+    'false',
+    'pinned 没有归档，不能标成已归档',
+  );
+
+  findByAttr(renderer.tree, 'data-cr-force-unpin').props.onClick();
+  await renderer.settle();
+  assert.deepEqual(harness.actionCalls.filter((call) => call.action === 'force-archive'), [
+    { action: 'force-archive', sessionId: OLD_SESSION_ID, confirmStop: true },
+    { action: 'force-archive', sessionId: OLD_SESSION_ID, confirmStop: true, confirmUnpin: true },
+  ]);
+  assert.ok(textOf(findByAttr(renderer.tree, 'data-cr-force-note')).includes('旧会话已归档'));
+});
+
+test('强制归档：宿主明确没有 archiveSession（capabilities.forceArchive=false）→ 隐藏入口', async () => {
+  const { renderer } = await mountForceMenu({
+    parentArchived: false,
+    capabilities: { unarchive: true, forceArchive: false },
+  });
+  assert.equal(forceItemOf(renderer.tree), null, '宿主没有归档接口时不显示必然失败的入口');
+});
+
+test('强制归档：旧会话已归档时不再显示强制入口（只保留恢复）', async () => {
+  const { renderer } = await mountForceMenu({ parentArchived: true });
+  assert.equal(forceItemOf(renderer.tree), null);
+  assert.ok(actionKeys(renderer.tree).includes('unarchive'));
 });
 
 /* ------------------------------------------------------------------ *
