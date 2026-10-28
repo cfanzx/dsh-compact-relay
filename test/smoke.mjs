@@ -1215,7 +1215,7 @@ test('debug: 钉住裁剪按成员判定（seq 倒挂范围也能挡住）', () 
   assert.equal(clipped.pinnedKept, 1);
 });
 
-test('debug: 钉住截断后复检工具配对，不平衡就缩/拒绝', () => {
+test('0.6: pin 退役后锁定记录不再截断选段（收藏不改变压缩范围）', () => {
   const session = {
     id: 'debug-range',
     log: [
@@ -1240,8 +1240,9 @@ test('debug: 钉住截断后复检工具配对，不平衡就缩/拒绝', () => 
   const nodes = session.surface.nodes.map((seq) => ({ seq, heuristicTokens: 10 }));
   const range = selectCompactableRange({ session, nodes, engine, cfg, tokenOf: (node) => node.heuristicTokens });
   assert.notEqual(range, null);
-  assert.deepEqual(range.shadowedSeqs, [1], '被钉到 seq3 → 先裁到 [1,2]；终点 2 不平衡 → 再缩到 [1]');
-  assert.equal(range.pinnedCut, true);
+  // 0.6：pin 退役（改「收藏」），锁定记录不再参与选段。
+  assert.deepEqual(range.shadowedSeqs, [1, 2, 3, 4], 'pin 记录不再截断选段');
+  assert.notEqual(range.pinnedCut, true);
 });
 
 test('debug: resolveModelInfo 失败不永久缓存 fallback 窗口', async () => {

@@ -237,15 +237,11 @@ assert.equal(
 session.appendPluginRecord(PIN_RECORD_TYPE, { seqs: [1], at: Date.now() });
 const logAfterPin = session.log.length;
 const previewPinned = await previewBetterCompact(deps, { agent });
-assert.equal(previewPinned.preview.pinnedKept, 1, '范围内被锁定保护的消息条数');
-assert.deepEqual(previewPinned.preview.pinHits, { inRange: 1, total: 1 }, 'pin 命中：范围内 1 条 / 会话共 1 条');
-assert.equal(previewPinned.preview.endSeq < 1, true, '压缩范围在锁定消息之前截断（锁定消息不会被压掉）');
+// 0.6：pin 退役（改「收藏」），锁定记录不再保护消息、不再截断范围。
+assert.equal(previewPinned.preview.pinnedKept, undefined, 'pin 退役后不再统计锁定保护');
+assert.equal(previewPinned.preview.endSeq < 1, false, '锁定记录不再截断压缩范围');
 assert.equal(session.log.length, logAfterPin, '再次预览仍然只读');
-assert.equal(
-  previewPinned.preview.pinSuggest.items.some((item) => item.seq === 1),
-  false,
-  '已锁定的消息不再出现在建议列表',
-);
+// 0.6：pin 退役，锁定记录不再参与建议列表过滤（pinSuggest 本身保留）。
 
 console.log('PASS  0.4 P1-1 建议锁定：关键决策/报错堆栈/明确要求别改识别 + 反例全排除');
 console.log('PASS  0.4 P1-1 建议锁定：预览只提示不自动锁（不写会话事件）+ 超上限时优先保留关键要求');

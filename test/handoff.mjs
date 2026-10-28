@@ -1001,39 +1001,20 @@ test('0.5.1 批 2：锁定快照全部过期时，菜单显示「解除失效锁
   assert.equal(expired.message.includes('清理过期'), true);
 });
 
-test('M6 钉住：精压范围避开被钉消息，被钉消息保留在 surface', async () => {
-  const session = baseSourceSession(); // surface 0..3
-  const { ctx, engine } = makeCtx();
-  const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
-  const agent = createAgent(session);
-  pinByIndex(deps, { agent, index: 2 }); // 候选 1=seq3、2=seq2 → 钉 seq2
-
-  const preview = await previewBetterCompact(deps, { agent });
-  assert.notEqual(preview.preview, null);
-  assert.equal(preview.preview.nodes, 1, '只压 seq1（seq2 被钉住，范围截到它之前）');
-  assert.equal(preview.message.includes('已跳过 1 条锁定的消息'), true);
-
-  const outcome = await betterCompact(deps, { agent });
-  assert.equal(outcome.compacted, true);
-  assert.deepEqual(outcome.shadowedSeqs, [1]);
-  assert.equal(session.surface.nodes.includes(2), true, '被钉消息必须留在 surface');
-  assert.equal(session.surface.nodes.includes(3), true);
-  assert.equal(session.surface.nodes.includes(1), false, 'seq1 已被摘要替换');
-});
-
-test('M6 钉住：钉住挡在最前面 → 不压，并明确提示被钉住挡住', async () => {
+test('0.6 收藏：pin 退役后锁定记录不再影响压缩选段', async () => {
   const session = baseSourceSession();
   const { ctx, engine } = makeCtx();
   const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
   const agent = createAgent(session);
-  pinByIndex(deps, { agent, index: 3 }); // 候选 3 = seq1（可压范围的第一个节点）
+  pinByIndex(deps, { agent, index: 2 }); // 旧记录仍写盘，但不再参与选段
 
   const preview = await previewBetterCompact(deps, { agent });
-  assert.equal(preview.preview, null);
-  assert.equal(preview.message.includes('被「锁定」保护'), true);
+  assert.notEqual(preview.preview, null, 'pin 记录不再挡住压缩');
+  assert.equal(preview.message.includes('已跳过 1 条锁定的消息'), false, '不再报告跳过锁定消息');
+
   const outcome = await betterCompact(deps, { agent });
-  assert.equal(outcome.compacted, false);
-  assert.equal(session.surface.nodes.includes(1), true, '历史没动');
+  assert.equal(outcome.compacted, true);
+  assert.equal(outcome.shadowedSeqs.includes(2), true, '被 pin 的 seq2 照常进入压缩范围');
 });
 
 /* ---------------- 子会话标题：新链继承原名；旧链不叠前缀 + 标出第几次 ---------------- */

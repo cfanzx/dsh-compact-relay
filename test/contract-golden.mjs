@@ -313,6 +313,8 @@ function normalizedRelayOf(relay) {
   const out = {};
   for (const [key, value] of Object.entries(relay)) {
     if (key === 'parentId' || key === 'childId' || key === 'parentSessionId') out[key] = labelOf(value);
+    // 0.6：链根会话 id 与随机 uuid 绑定 → golden 只锁「有值」，不锁具体 id。
+    else if (key === 'rootId') out[key] = typeof value === 'string' ? '<rootId>' : value;
     else if (key === 'at') out[key] = '<at>';
     else if (key === 'atIso') out[key] = '<atIso>';
     else if (key === 'path') out[key] = '<path>';
@@ -366,6 +368,7 @@ const FRAME_KEYS = [
   'compactRange',
   'compactRangeReason',
   'compressHint',
+  'favorites',
   'level',
   'native',
   'next',
@@ -402,6 +405,7 @@ const PARENT_RECORD_KEYS = [
   'scheme',
   'titleSeq',
   'historyTitle',
+  'rootId',
 ];
 const CHILD_RECORD_KEYS = ['parentId', 'childId', 'ordinal', 'baseTitle', 'title', 'scheme', 'titleSeq', 'path', 'at', 'atIso'];
 
@@ -431,6 +435,10 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favorites.count=number
+favorites.messageIds[]=empty
+favorites.seqs[]=empty
+favorites.truncated=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=null
@@ -499,6 +507,10 @@ compactRange.startSeq=number
 compactRange.tokens=number
 compactRangeReason=string
 compressHint=null
+favorites.count=number
+favorites.messageIds[]=empty
+favorites.seqs[]=empty
+favorites.truncated=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -571,6 +583,10 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favorites.count=number
+favorites.messageIds[]=empty
+favorites.seqs[]=empty
+favorites.truncated=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -615,6 +631,7 @@ relay.parentId=string
 relay.parentSessionId=string
 relay.path=string
 relay.planId=null
+relay.rootId=string
 relay.scheme=string
 relay.title=string
 relay.titleSeq=number
@@ -661,6 +678,10 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favorites.count=number
+favorites.messageIds[]=empty
+favorites.seqs[]=empty
+favorites.truncated=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -746,6 +767,10 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favorites.count=number
+favorites.messageIds[]=empty
+favorites.seqs[]=empty
+favorites.truncated=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -818,6 +843,10 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favorites.count=number
+favorites.messageIds[]=empty
+favorites.seqs[]=empty
+favorites.truncated=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -917,7 +946,8 @@ const VALUES = {
     "baseTitle": "原会话标题",
     "scheme": "history-n",
     "titleSeq": 4,
-    "historyTitle": "历史 2：原会话标题"
+    "historyTitle": "历史 2：原会话标题",
+    "rootId": "<rootId>"
   },
   "chain": {
     "ordinal": 1,

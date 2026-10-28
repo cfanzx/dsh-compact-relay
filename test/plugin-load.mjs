@@ -104,7 +104,7 @@ assert.equal(inject.includes('tools'), true, 'M4 需要根级 tools 服务来注
 assert.equal(inject.includes('systemPrompt'), true, '0.3.4 需要根级 systemPrompt 注入「可压缩区间」提示');
 assert.deepEqual(
   host.commands.map((definition) => definition.name).sort(),
-  ['bc', 'bctest', 'handoff', 'pin', 'unpin'],
+  ['bc', 'bctest', 'favorite', 'handoff', 'pin', 'unpin'],
 );
 assert.deepEqual(
   host.routes.map((route) => route.path).sort(),
