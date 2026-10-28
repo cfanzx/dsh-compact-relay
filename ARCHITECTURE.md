@@ -127,7 +127,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/compaction-pair.js` | `scanCompactionLog` | **压缩事件配对扫描唯一来源**：一次扫描日志返回 summaries / ends(compactionId→end.data) / replaceByCoveredSeq；`session-view.countSummaries` 与 `compaction-log` 共用 |
 | `dsh/model-task.js` | `prepareModelCall`, `cacheAlignedControls`, `callModelAttempt`, `modelAttemptResult` | **模型任务公共装配/收尾**：会话→路由→预算→推理档、cache 对齐参数（不继承 reasoningEffort）、单次 callStream+finishProblem、结果元信息；`summarizer` 与 `handoff-writer` 共用（各自保留校验/重试策略） |
 | `dsh/settings-file.js` | `readSettingsFile`, `writeSettingsFile` | 设置文件读写（`$DSH_HOME/compact-relay.json`，`{v:1,config}` 信封、原子写） |
-| `dsh/relay.js` | `normalizeRelayRecord`, `relayRecordOf`, `relayInboundRecordOf`, `relayOutboundRecordOf`, `legacyRelayChainOf`, `relayChainOf`, `writeRelayRecord` | **relay record 读/写/投影唯一实现**：白名单归一化（含 `scheme`/`titleSeq`/`historyTitle`，缺为 null）；`relayRecordOf` 取会话最近一条（语义不变）；`relayInboundRecordOf` = `childId === session.id` 的入站记录（0.5.1 DCR-01），`relayOutboundRecordOf` = 出站记录（`readState.next` 的数据源）；`legacyRelayChainOf` 给 0.5.0 前无记录的老链按 `header.parentSession` + 标题兜底合成只读链（DCR-02）；`relayChainOf` 投影只读链节点（`ordinal`/`baseTitle`/`parentId`/`childId`/`scheme`，`path` 有才带）；写失败只返回 false，不阻断交接 |
+| `dsh/relay.js` | `normalizeRelayRecord`, `relayRecordOf`, `relayInboundRecordOf`, `relayOutboundRecordOf`, `legacyRelayChainOf`, `relayChainOf`, `writeRelayRecord` | **relay record 读/写/投影**（构造已收口到 `core/relay-record.js`，0.5.2；归一化/投影仍在此）：白名单归一化（含 `scheme`/`titleSeq`/`historyTitle`，缺为 null）；`relayRecordOf` 取会话最近一条（语义不变）；`relayInboundRecordOf` = `childId === session.id` 的入站记录（0.5.1 DCR-01），`relayOutboundRecordOf` = 出站记录（`readState.next` 的数据源）；`legacyRelayChainOf` 给 0.5.0 前无记录的老链按 `header.parentSession` + 标题兜底合成只读链（DCR-02）；`relayChainOf` 投影只读链节点（`ordinal`/`baseTitle`/`parentId`/`childId`/`scheme`，`path` 有才带）；写失败只返回 false，不阻断交接 |
 | `dsh/relay-chain.js` | `readRelayChain`, `MAX_CHAIN_HOPS` | **0.5.1 DCR-05 完整链服务端读取**：从当前会话起按「子会话入站 relay 记录」逐层向上（最多 8 跳、`seen` 去重）；每层优先 live 日志，未加载则 `ctx.sessionPersistence.stat(id)` 读 header + `open(id,'read').read()` 读事件（**不加载会话、不写状态**）；path 优先本跳记录、缺了用父会话 `childId+ordinal` 对得上的出站记录；老链无记录时用 header+`session/title` 逐层兜底；某层读不到返回已读行 + `unreadable` |
 | `dsh/diag-counters.js` | `createDiagCounters`, `errorCodeOf`, `localIso` | **0.4 P0-2 进程内诊断计数**：压缩/交接成功失败、最近 20 个耗时样本的 p50/p95、按 `(code, phase)` 聚合的最近 20 条错误码（只收 code/phase/at/count，**不收 message**）、锁定次数；纯内存零 IO，重启清零 |
 | `dsh/diagnostics.js` | `buildDiagnostics`, `renderIssueUrl`, `assertNoLeak`, `DIAG_SCHEMA` | **0.4 P0-2 诊断包构造**：逐字段 allowlist + 正则脱敏（命中替换为 `[REDACTED]`，只记数量）+ 尺寸上限（JSON ≤64KB / errors ≤20 条 / 单条 ≤200 字符），输出 `dcr-diagnostics/v1` JSON 与同源 Markdown；issue URL 只预填短字段（<7500）；零 IO 零网络 |
@@ -180,9 +180,10 @@ readState(deps, {sessionId}) -> {
                                    //   next = 最近一条**出站**记录的投影（父→子入口用；0.5.1 只下发）
                                    //   没有链信息 → chain/next 为 null；记录没写的字段 → null
   parentArchived,                  // 入站父会话在 registry 归档集合里？true/false/null（不知道）
+  parentPinned,                    // 0.5.2：入站父会话是否在侧栏置顶？true/false/null（不知道）
   nextArchived,                    // 0.5.1 批 3：出站目标 next.childId 是否在归档集合里
                                    //   true/false/null（没有 next 或读不到）；与 parentArchived 对称
-  capabilities,                    // {unarchive:boolean} —— 宿主有没有恢复归档会话的接缝
+  capabilities,                    // {unarchive, forceArchive} —— 宿主有没有恢复归档 / 强制归档（stopActivity）接缝
   pins: {                          // 0.5.1 批 2：锁定消息的三层视图（只加不改）
     count, seqs, marks,            //   live：仍在当前 surface（0.5.0 语义，老客户端照用）
                                    //   marks 是位置标记（0–1），0.5.1 起环上不画；数据面照常
@@ -312,7 +313,7 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 
 **帧体积口径**（0.5.1 定稿，实测：中段会话 + 200K 窗口 + 4 节点，`JSON.stringify(readState)`）：
 整帧 ≈ 2.1KB，其中 `chain` ≈ 215B、`next` ≈ 215B、`nextArchived`/`parentArchived` 各 4–5B、
-`pins` ≈ 110B（`stale` 为空时 ≈ 54B，`atRisk` 为 null）、`capabilities` ≈ 18B、`sessionPinned` 4–5B。
+`pins` ≈ 110B（`stale` 为空时 ≈ 54B，`atRisk` 为 null）、`capabilities` ≈ 40B（0.5.2 增 `forceArchive`）、`sessionPinned` 4–5B。
 0.5.1 相对 0.5.0 的 additive 增量 ≈ 300B/帧（`next` + `nextArchived` + `pins.stale/atRisk` +
 `sessionPinned` + `capabilities`），与 0.5.0 的 `chain`（215B）同一量级；**没有**把标题正文、
 日志、交接单内容搬进帧里（`test/state-passive.mjs` 锁 `chain` < 512B）。

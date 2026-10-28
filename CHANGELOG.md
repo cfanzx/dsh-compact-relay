@@ -1,6 +1,92 @@
 # Changelog
 
-## 0.5.1（2026-10-26 · 未发布，待 Lead 验收）
+## 0.5.2（2026-10-28）
+
+> 从 0.5.1 发布点 `e3c5ab3` 拉出的补丁批次（分支 `fix/0.5.2`），npm / GitHub 已发布。
+> 按 `dcr-架构梳理与重构方案-2026-10-26.md` 的 0.5.x 窗口推进：**S1 契约快照 → S2 record 构造器 →
+> 批 C 强制归档入口 + 文档口径修复**。测试 **347 → 375 PASS**，bundle 重建且 `--check` 通过。
+>
+> **契约变化（全部 additive）**：`readState` 增 `parentPinned`（旧会话是否在侧栏置顶）与
+> `capabilities.forceArchive`（宿主有没有 `archiveSession`）；`/api/compact-relay-action` 增
+> `action:'force-archive'`（必须显式 `confirmStop:true`，旧会话置顶时还需 `confirmUnpin:true`）。
+> 自动归档的行为一个字节不改：**默认不强制、不 stopActivity**。
+
+### 缓存对齐：侧调用沿用主请求的推理档位（2026-10-27 P1 取证修复）
+
+- **根因（已实验定位）**：摘要/交接单调用的前缀回放逐字节正确（LCP 15 条 vs 主请求 14/14，tools
+  与 toolHistory 一致），唯一致命差异是 `reasoningEffort`——旧实现固定传 `'off'`，主循环是 `'max'`；
+  宿主把它翻成 wire 的 `thinking: enabled|disabled`，缓存前缀在**第一条 assistant 消息**的渲染处断开。
+  隔离 A/B（同一组 prompt、真实模型）：`off` 命中 **74.0%**（复跑 73.8–74.4），改成主循环同值
+  **96.9–98.2%**；生产 prompt 20–50 万 token，于是同样的断点表现为 **2–5%** 命中（≈系统提示词 11K）。
+- **修法**：`prepareModelCall` 改为优先沿用 `session.requestHeader().config.reasoningEffort`
+  （仅当 provider/model 与本次目标一致；否则退回旧的「模型支持 off 就 off」兜底）。
+  摘要与交接单共用这条前置，所以两者都吃到缓存；`cacheAlignedControls` 的注释同步纠正。
+- **配套**：`summary.maxTokens` 与 `handoff.maxTokens` 默认 8,192 → **16,384**，兜住重新开启的
+  思考输出，避免 2026-10-19「思考吃光上限 → 截断」旧 bug 回归；截断重试逻辑不变。
+- **测试**：新增「P1 cache 对齐」1 条（header 有档位 → 摘要/交接单同档）；更新旧断言（侧调用不再
+  是 off、输出上限 16384）；非推理模型用例补真实 header 形状（无 reasoningEffort）后仍走兜底。
+- **生产验证（2026-10-27 16:2x）**：隔离 A/B 两次 96.9%；真机重启后临时会话压缩 38 条/41,149 token，
+  摘要 prompt 114,032（未命中 **368**），命中 **99.7%**（修复前生产 2–5%）。素材在
+  `dcr-ctx-audit/forensics/findings.md §7`。
+
+### S1 契约快照（生产行为零变化）
+
+- 新增 `test/contract-golden.mjs`：锁 `readState` 帧（6 场景的键集合 + 结构/类型 + 链投影取值）、
+  父/子 relay record（**键顺序** + null/省略语义 + 新链/改名失败/老链三条真实流程）、标题格式，
+  另有负向自检（改键 / 改值 / 改类型 / 换键序都必须被抓到）。
+- 口径修正：record 的**键顺序**是 JSONL 字节契约（顺序敏感，`Object.keys` 深比较）；只有 `readState`
+  帧才用「排序后的键集合」。`dcr-架构梳理与重构方案-2026-10-26.md` §S1 已按实际实现同步。
+
+### S2 `core/relay-record.js`：record 形状的唯一构造器（字节级不变）
+
+- 新增 `lib/core/relay-record.js`：`relayRecordOfForm({role,...})` + `parentRelayRecordOf` /
+  `childRelayRecordOf`。父/子 record 的键顺序、0.3 旧字段双写（`parentSessionId`/`index`）、
+  `planId` 只父、`historyTitle` 条件写、`path` 条件写、`titleSeq` 恒写 null 全部收口到一处；
+  `actions/handoff.js` 与 `dsh/sessions.js` 只传语义参数。
+- 文档口径：§S2 表与附录 C 的 `atIso` 改为实际口径 —— 父/子**两处都是** `localIso(new Date(at))`
+  （原表写成「子 `new Date(at)`、父 `at`」，是评审时的已知漂移）。
+
+### 批 C：强制归档旧会话（0.5.x 计划 P4 / L 项）
+
+- **入口**：接力条菜单「强制归档旧会话（会停止后台任务）」——旧会话还没归档时出现；
+  宿主没有 `archiveSession`（`capabilities.forceArchive=false`）时隐藏，不做必然失败的入口。
+- **二次确认**：面板明确写「会停止旧会话上正在跑的任务（turn / 子代理 / 后台任务 / 定时任务），
+  中断后无法恢复」；旧会话在侧栏置顶时补一行「归档会同时取消置顶（宿主行为）」并带
+  `confirmUnpin:true`（与交接前的置顶确认同口径）。
+- **服务端**：新增 `lib/actions/force-archive.js`，是生产代码里**唯一**调用
+  `workspaceRegistry.archiveSession(id, { stopActivity:true })` 的地方（静态守卫锁死）；
+  没有 `confirmStop:true` 一律拒绝；已归档幂等（不再停任务）；置顶未确认返回 `pinned`（不静默
+  unpin）；失败抛可读错误（HTTP 400 带具体原因），不静默、不假装成功。
+- **告知文案**：归档成功 / 此前已归档 / 置顶未归档三套全部沿用 `handoffArchiveNoteOf`
+  （含「归档会取消置顶」与「恢复旧会话」入口）。
+- **默认仍不强制**：交接的自动归档照旧不带 `stopActivity`，旧会话有活跃任务时保留可见
+  （单测断言 `options.stopActivity === undefined`）。
+- **测试**：新增 `test/force-archive.mjs`（18 条：`stopActivity` 透传 / 缺确认拒绝 / 幂等 /
+  置顶确认 / 失败可读 / HTTP 不要求活 agent / `readState` 能力位 / 默认不强制 / 静态守卫）；
+  `test/relay-bar.mjs` 增 8 条组件级用例（入口 / 二次确认 / 透传 / 失败 / 置顶 / 服务端回报
+  pinned 后重发 / 能力缺失隐藏 / 已归档不再显示）。合计 **347 → 375 PASS**。
+
+### UI 修复：交接预览草稿框被 flex 压成 0 高
+
+- **症状**：真机截图确认，交接预览弹窗里九段草稿的只读预览框塌成 14px 一条缝
+  （上下边框各 1px + padding 6px×2，内容高度 0），九段草稿完全看不见，只能看到第一行文字被切掉的
+  上半截。
+- **根因**：弹窗外层是 `display:flex; flex-direction:column; maxHeight:min(72vh, 520px); overflow-y:auto`，
+  子项默认 `flex-shrink:1`；草稿预览框是 `overflow:auto` 的滚动容器，自动最小尺寸为 0，
+  浏览器于是把它压到 0 高来满足 maxHeight，弹窗自身反而不出现滚动条。内容一变长（就绪警告 +
+  两个可编辑 textarea）就必然触发。
+- **修法**：内容包裹层加 `flexShrink:0` —— 保持自然高度，超出 maxHeight 时由弹窗自己滚动，
+  不再压扁子项；草稿预览框同样加 `flexShrink:0`（防御性，任何 flex 上下文都不许压它）。
+  两处各带一个测试标记（`data-cr-handoff-body` / `data-cr-handoff-draft`），
+  产物 `lib/client.js` 由 `node scripts/build-client.mjs` 重建，`--check` 通过。
+- **状态**：已随 0.5.2 发布。
+
+### 文档
+
+- `README.md` / `TUTORIAL.md` 补 0.5.2 用法（强制归档入口、二次确认、置顶提示、默认不强制）。
+- `dcr-架构梳理与重构方案-2026-10-26.md`：§S1 的 record 顺序口径、§S2 + 附录 C 的 `atIso` 口径修正。
+
+## 0.5.1（2026-10-26 · 已发布）
 
 > 分支 `fix/0.5.1`（从 `main` = 0.5.0 拉出，只带 0.5.x 需要的改动；0.6 的 timeline/marks/milestone
 > 不进来）。**四批功能合并定稿 + 1 条设计修正**：批 1 核心 bug（DCR-01/02/03/04 + D01 + D03）、
