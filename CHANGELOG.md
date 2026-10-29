@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.5（2026-10-29，0.5.4 的 debug 版）
+
+> 修用户反馈：**收藏后星标「自动消失」**。只改客户端样式注入，收藏数据/后端/0.5.4 建议逻辑零改动。
+> 测试 **396 → 398 PASS**（新增 2 条组件契约）。
+
+- **根因**：星标挂在宿主的助手消息 hover 动作行里。宿主 CSS（`MessageIconActions.module.css`）对
+  `[data-actions-reveal="hover"]` 的行默认 `opacity:0`，`:hover`/`:focus-within` 才恢复——收藏后星标仍在
+  DOM、`aria-pressed=true`，但整行透明，鼠标一移开就看不见。不是收藏丢失、也不是 0.5.4 回归。
+- **修法**：注入 CSS `:has()`，只把「含已收藏星标的 hover 动作行」强制 `opacity:1 !important`；非 hover /
+  非键盘焦点时，同行其它按钮与同 slot 的其它插件按钮保持视觉隐藏且 `pointer-events:none` → **常亮的只有
+  已收藏星标本身**，hover/focus 时完整动作行照常出现。选择器只用两个稳定锚点（`[data-actions-reveal="hover"]`、
+  `[data-slot="conversation.chat.assistant-actions"]`），**不依赖宿主哈希类名**；触屏（`hover:none`）不生效；
+  不支持 `:has()` 的旧浏览器整段忽略、回退现状不误伤。
+- **取消收藏**：立即恢复宿主原来的 hover 隐藏行为；未收藏消息行为不变。
+
 ## 0.5.4（2026-10-29，0.5.3 的 debug 版）
 
 > 0.5.3 发布后的针对性修复，只动收藏/推荐两处数据面与预览卡文案，**压缩主流程零改动**。

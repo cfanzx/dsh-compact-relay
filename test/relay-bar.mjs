@@ -249,6 +249,21 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
     document: {
       body: {},
       documentElement: {},
+      // 0.5.5：收藏星标「常亮」样式注入需要 head / getElementById / createElement，
+      // 这里给一个极简替身，测试可读回注入的 CSS 文本（真实页面由浏览器执行同一段 CSS）。
+      head: {
+        children: [],
+        appendChild(el) {
+          this.children.push(el);
+          return el;
+        },
+      },
+      getElementById(id) {
+        return this.head.children.find((el) => el.id === id) ?? null;
+      },
+      createElement(tag) {
+        return { tagName: String(tag).toUpperCase(), id: '', textContent: '', dataset: {}, style: {}, remove() {} };
+      },
       addEventListener(type, handler) {
         (listeners[type] ??= []).push(handler);
       },
@@ -410,6 +425,20 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
     renderer.renderOnce();
     return renderer;
   }
+  /** 0.5.5：读回星标模块注入的 `<style id="dcr-favorite-style">`（常亮规则在里面）。 */
+  function favoriteStyle() {
+    return sandbox.document.head.children.find((el) => el.id === 'dcr-favorite-style') ?? null;
+  }
+  /** 0.5.5：挂一条助手消息的收藏星标（宿主会把 messageId 作为 slot ownerProps 传入）。 */
+  function mountFavoriteStar(sessionId, messageId) {
+    const entry = registered['conversation.chat.assistant-actions'];
+    assert.ok(entry !== undefined, '应注册 conversation.chat.assistant-actions（收藏星标）');
+    assert.equal(entry.meta.id, 'compact-relay-favorite');
+    const injected = entry.meta.inject(sessionId);
+    const renderer = mountComponent(entry.component, react, { ...injected, messageId });
+    renderer.renderOnce();
+    return renderer;
+  }
   function mount(sessionId) {
     const entry = registered['conversation.input.dock'];
     assert.ok(entry !== undefined, '应注册 conversation.input.dock');
@@ -423,7 +452,7 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   function fire(type, event) {
     for (const handler of listeners[type] ?? []) handler(event);
   }
-  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, setForceArchiveResponse, setCompactPreviewResponse, setFavoriteMarkResponse, failState, healState, mount, mountLeft, fire };
+  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, setForceArchiveResponse, setCompactPreviewResponse, setFavoriteMarkResponse, failState, healState, mount, mountLeft, mountFavoriteStar, favoriteStyle, fire };
 }
 
 const SESSION_ID = 'session-new-0001';
@@ -1992,6 +2021,54 @@ test('压缩预览卡收藏区（0.5.4）：工具条目保留在已收藏列表
   const suggestText = textOf(findByAttr(renderer.tree, 'data-cr-favorite-suggest-row'));
   assert.equal(suggestText.includes('[用户]'), true, '建议区只渲染服务端给的用户/助手候选');
   assert.equal(suggestText.includes('[工具]'), false, '建议区不出现工具角色');
+});
+
+/* ------------------------------------------------------------------ *
+ * 9b. 0.5.5 收藏星标常亮（用户反馈：收藏后星标随 hover 动作行一起消失）
+ *   根因：宿主动作行默认 opacity:0，星标数据/属性都在、只是整行透明。
+ *   修复：注入 CSS，用 :has() 只让「含已收藏星标的动作行」常亮，且非 hover 时只露星标。
+ *   这里锁住：CSS 契约（选择器/作用范围/不依赖哈希类名）+ 星标 aria-pressed 状态。
+ * ------------------------------------------------------------------ */
+
+test('收藏星标常亮（0.5.5）：注入 CSS 用 :has() 只让含已收藏星标的动作行可见', async () => {
+  const harness = loadBundle();
+  const style = harness.favoriteStyle();
+  assert.ok(style !== null, '应注入 <style id="dcr-favorite-style">');
+  const css = String(style.textContent).replace(/\s+/gu, ' ');
+  assert.equal(css.includes('@media (hover: hover)'), true, '只在有 hover 的设备上生效（触屏本来就常显）');
+  assert.equal(css.includes('opacity: 1 !important'), true, '要覆盖宿主非 hover 时的 opacity:0');
+  assert.equal(css.includes('button.dcr-favorite-star[aria-pressed="true"]'), true, '只对已收藏的星标生效（未收藏走宿主 hover 规则）');
+  assert.equal(css.includes('[data-actions-reveal="hover"]'), true, '可见性开关用宿主稳定属性，不用哈希类名');
+  assert.equal(css.includes('[data-slot="conversation.chat.assistant-actions"]'), true, '用 slot 契约锚定动作行（宿主类名哈希不影响）');
+  assert.equal(css.includes(':has('), true, '靠 :has() 从星标反选到宿主动作行');
+  assert.equal(css.includes(':not(:hover):not(:focus-within)'), true, '非 hover / 非键盘焦点时才收起其它按钮');
+  assert.equal(css.includes('pointer-events: none'), true, '被隐藏的其它按钮不留隐形可点区域');
+  assert.equal(/[A-Za-z0-9]{5,}_actions/.test(css), false, 'CSS 不能依赖宿主哈希类名（会随构建变）');
+  assert.equal(css.includes('.dcr-favorite-star:hover'), true, '原有星标 hover 样式保留');
+});
+
+test('收藏星标常亮（0.5.5）：已收藏消息的星标 aria-pressed=true（CSS 选择器依赖该状态）', async () => {
+  const harness = loadBundle();
+  harness.setState({
+    ok: true,
+    sessionId: SESSION_ID,
+    favorites: { count: 1, kind: 'seq', seqs: [3], messageIds: ['msg-fav-1'] },
+  });
+  const renderer = harness.mountFavoriteStar(SESSION_ID, 'msg-fav-1');
+  await renderer.settle();
+  const star = findAll(renderer.tree, (node) => node.props?.['aria-pressed'] !== undefined)[0];
+  assert.ok(star !== undefined, '已收藏消息应渲染星标');
+  assert.equal(star.props.className, 'dcr-favorite-star');
+  assert.equal(star.props['aria-pressed'], 'true', '已收藏 → aria-pressed=true（常亮 CSS 的选择器锚点）');
+  assert.equal(star.props.title, '取消收藏');
+
+  // 未收藏消息：aria-pressed=false → 不命中常亮规则。
+  const other = harness.mountFavoriteStar(SESSION_ID, 'msg-not-fav');
+  await other.settle();
+  const plainStar = findAll(other.tree, (node) => node.props?.['aria-pressed'] !== undefined)[0];
+  assert.ok(plainStar !== undefined);
+  assert.equal(plainStar.props['aria-pressed'], 'false');
+  assert.equal(plainStar.props.title, '收藏这条');
 });
 
 /* ------------------------------------------------------------------ *
