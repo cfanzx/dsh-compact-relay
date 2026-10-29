@@ -118,7 +118,10 @@ test('强制归档：confirmStop:true → archiveSession(id,{stopActivity:true})
   assert.equal(result.ok, true);
   assert.equal(result.status, 'archived');
   assert.equal(result.archived, true);
-  assert.deepEqual(result.archivedSessionIds, ['session-old']);
+  // 0.5.3 P3-a：响应只回数量 + 本次新归档 id，不再回全量归档集合。
+  assert.equal(result.archivedCount, 1);
+  assert.deepEqual(result.newlyArchived, ['session-old']);
+  assert.equal(result.archivedSessionIds, undefined, '全量 archivedSessionIds 必须不再下发（142 条 ≈ 7KB）');
   assert.ok(result.note.includes('旧会话已归档'), result.note);
   assert.ok(result.note.includes('恢复旧会话'), '成功文案必须告诉用户恢复入口');
   assert.equal(fixture.archivedSet.has('session-old'), true);
@@ -146,16 +149,29 @@ test('强制归档：缺少 sessionId → 可读错误（code=force-archive）',
   );
 });
 
-test('强制归档：已归档 → already（幂等），不再 stopActivity 一次', async () => {
+test('强制归档：已归档 + 显式确认 → already，并补跑一次 stopActivity 兜底（P2-下 防漏杀）', async () => {
   const fixture = archiveCtx({ archived: ['session-old'] });
   const result = await forceArchiveSession(
     { ctx: fixture.ctx },
     { sessionId: 'session-old', confirmStop: true },
   );
-  assert.deepEqual(fixture.calls, [], '已归档时不能再写盘/再停任务');
+  // 用户明确点了「强制归档」：即使已在集合里，也补停一次任务，避免归档前残留任务漏杀。
+  assert.deepEqual(fixture.calls, [{ sessionId: 'session-old', options: { stopActivity: true } }]);
   assert.equal(result.status, 'already');
   assert.equal(result.archived, true);
+  assert.equal(result.stopActivity, 'done');
+  assert.deepEqual(result.newlyArchived, []);
   assert.ok(result.note.includes('此前已在归档中'), result.note);
+  assert.ok(result.note.includes('补停'), result.note);
+});
+
+test('强制归档：已归档 + 没带确认 → already（200 语义），且明确「本次未执行 stopActivity」', async () => {
+  const fixture = archiveCtx({ archived: ['session-old'] });
+  const result = await forceArchiveSession({ ctx: fixture.ctx }, { sessionId: 'session-old' });
+  assert.deepEqual(fixture.calls, [], '没确认时不能停任务');
+  assert.equal(result.status, 'already');
+  assert.equal(result.stopActivity, 'skipped');
+  assert.ok(result.note.includes('未执行 stopActivity'), result.note);
 });
 
 test('强制归档：旧会话置顶且未确认 → pinned（不归档、不取消置顶），文案带「归档会取消置顶」', async () => {
@@ -302,15 +318,45 @@ test('HTTP force-archive：缺 confirmStop → 400 且不碰 registry（二次�
   assert.deepEqual(fixture.calls, [], '没确认时一次都不能调 archiveSession');
 });
 
-test('HTTP force-archive：缺 sessionId → 400', async () => {
+test('HTTP force-archive：缺 sessionId → 400（动作层校验）', async () => {
   const route = registerActionRoute({ ctx: archiveCtx().ctx });
   const post = postOf(route);
   const missing = await post({ action: 'force-archive', confirmStop: true });
   assert.equal(missing.status, 400);
-  assert.ok(missing.json.message.includes('缺少要强制归档的旧会话 sessionId'), missing.json.message);
+  assert.ok(missing.json.message.includes('缺少要强制归档的会话 id'), missing.json.message);
 });
 
-test('HTTP force-archive：宿主失败 → 400 带具体原因（不是通用「失败：」）', async () => {
+test('HTTP force-archive：已归档 + 没带 confirmStop → 200 already（P2-1 不再先 400）', async () => {
+  const fixture = archiveCtx({ archived: ['session-old'] });
+  const route = registerActionRoute({ ctx: fixture.ctx });
+  const post = postOf(route);
+  const already = await post({ action: 'force-archive', sessionId: 'session-old' });
+  assert.equal(already.status, 200, JSON.stringify(already.json));
+  assert.equal(already.json.status, 'already');
+  assert.equal(already.json.stopActivity, 'skipped');
+  assert.deepEqual(fixture.calls, []);
+});
+
+test('HTTP force-archive：未知会话 → 404、宿主缺接缝 → 503（P2-2 错误码分档）', async () => {
+  const unknownNamed = new Error('no such session');
+  unknownNamed.name = 'WorkspaceUnknownSessionError';
+  const unknownFixture = archiveCtx({
+    archiveSession() {
+      throw unknownNamed;
+    },
+  });
+  const unknownPost = postOf(registerActionRoute({ ctx: unknownFixture.ctx, log: { warn() {} } }));
+  const unknown = await unknownPost({ action: 'force-archive', sessionId: 'session-nope', confirmStop: true });
+  assert.equal(unknown.status, 404, JSON.stringify(unknown.json));
+  assert.equal(unknown.json.code, 'force-archive');
+
+  const noRegistry = { get: () => undefined };
+  const missingPost = postOf(registerActionRoute({ ctx: noRegistry, log: { warn() {} } }));
+  const missing = await missingPost({ action: 'force-archive', sessionId: 'session-old', confirmStop: true });
+  assert.equal(missing.status, 503, JSON.stringify(missing.json));
+});
+
+test('HTTP force-archive：宿主内部失败 → 500 带具体原因（不是通用「失败：」）', async () => {
   const fixture = archiveCtx({
     archiveSession() {
       throw new Error('disk is full');
@@ -319,7 +365,8 @@ test('HTTP force-archive：宿主失败 → 400 带具体原因（不是通用�
   const route = registerActionRoute({ ctx: fixture.ctx, log: { warn() {} } });
   const post = postOf(route);
   const failed = await post({ action: 'force-archive', sessionId: 'session-old', confirmStop: true });
-  assert.equal(failed.status, 400);
+  // 0.5.3 P2-2：宿主内部失败 → 500（以前一律 400）。
+  assert.equal(failed.status, 500);
   assert.equal(failed.json.ok, false);
   assert.equal(failed.json.code, 'force-archive');
   assert.ok(failed.json.message.includes('disk is full'), failed.json.message);

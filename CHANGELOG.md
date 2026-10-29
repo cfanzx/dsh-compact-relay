@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.3（2026-10-29，未发布）
+
+> 从 0.5.2 发布点 `e4bd0b2` 拉出的分支 `fix/0.5.3`。主题：**收藏（pin 退役）+ 推荐收藏**，
+> 外加 0.5.2 真机验证带出的两个 P2 语义修正。测试 **375 → 385 PASS**（含 build-client --check）。
+
+### 收藏：把「标记」和「落档」彻底分成两步（b72fcdf / 6bec539）
+
+- **收藏 = 纯标记**：项目级 JSONL 只记 `{op, sessionId, seq}`；不复制正文、不改变压缩选段、
+  不占预算。**标记层不依赖活 agent**：归档/关闭的会话也能按 `sessionId + seq` 标记
+  （`action:'favorite-mark'`），收藏文件按**链根会话 id** 稳定定位，旧「标题-短 id」文件名只读兼容。
+- **固定入口**：`/favorite mark [seq]`（不带 seq 标最后一条已完成回复）；助手消息底部星标保留
+  （`action:'favorite-toggle'`，按 messageId 反查所属会话，客户端 sessionId 缺失/过期也能落对）。
+- **落档只在压缩时**：摘要里追加「收藏（本段）」目录 + `~/.dsh/dcr-favorites/snapshots/<根id>.md`
+  快照。压缩后再补标记时**当场写快照**（原文还在日志里才能写；读不到明确报错，不假装成功）。
+- **明确局限**：标了不压缩 = 只留一个序号；归档会话能标，但 0.5.3 不读会话档案拿原文（归 0.6）。
+
+### 推荐收藏：打分 → 点亮建议（5ad9b3c / 30709a9）
+
+- `dsh/favorite-scorer.js`：flash 档、关思考、temperature 0，只回 JSON 分数；失败静默降级（不亮）。
+- `dsh/favorite-watch.js`：监听 `assistant/message`，去抖 1.2s **只判每轮最后一条**；必亮词/屏蔽词
+  先判（屏蔽 > 必亮 > 分数）；已收藏的不再推荐；**绝不自动收藏**。
+- `readState.favoriteSuggest`（≤3 条：seq/messageId/分数/原因）→ 星标金色光晕（只点亮）。
+- 设置项：推荐收藏开关、三档阈值（宽松 60 / 标准 75 / 严格 85，默认标准）、必亮词、屏蔽词、
+  「试算」（真实打分、只读，不改任何状态）。
+- 红线测试：不点星时收藏文件不新增记录。
+
+### P2 语义修正（0.5.2 真机验证发现）
+
+- **P2-1 幂等顺序**：`force-archive` 的 already 判断移到 `confirmStop` 之前 —— 已归档的会话不带
+  二次确认也回 200 `already`（以前直接 400），`stopActivity` 明确回报 `done/skipped/failed`。
+- **P2-2 错误码分档**：`actionError` 带 `statusCode`；未知会话 404、宿主缺归档接缝 503、
+  内部失败 500（以前一律 400）。HTTP 只做映射，不重猜。
+- **P3-a 响应瘦身**：`force-archive` / `recover` 不再回全量 `archivedSessionIds`（142 条 ≈ 7KB，
+  客户端不读），改回 `archivedCount` + `newlyArchived` / `newlyRecovered`。
+- **already 防漏杀加固**：已归档 + 用户显式确认时补跑一次 `stopActivity`（幂等），并在 note 里写明
+  「本次已补停 / 本次未执行 stopActivity」，不假装停干净。
+
 ## 0.5.2（2026-10-28）
 
 > 从 0.5.1 发布点 `e3c5ab3` 拉出的补丁批次（分支 `fix/0.5.2`），npm / GitHub 已发布。

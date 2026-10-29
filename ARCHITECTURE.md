@@ -93,6 +93,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `core/markdown-lite.js` | `parseMarkdownLite`, `parseInlineLite` | **0.3.4（BUG-005）交接单轻量 markdown 解析**：标题/段落/有序无序列表/粗体/行内代码/代码块/分隔线；输出结构化 blocks+segments，不生成 HTML（XSS 内容原样当文本）；client 片段 `16-markdown.js` 构建时内联同一源码 |
 | `core/placeholders.js` | `isPlaceholderLine`, `isPlaceholderText` | 识别 `(none)`/无/N/A 等占位，防空壳文档/摘要 |
 | `core/pins.js` | `PIN_RECORD_TYPE`, `latestPinnedSeqs`, `clipRangeByPins` | 锁定：plugin record 快照、按锁定裁剪精压范围 |
+| `core/favorites.js` | `applyFavoriteOps`, `favoriteSeqsOf`, `buildFavoriteTitle`, `buildFavoriteDirectoryLines`, `countFavorites` | **0.5.3 收藏纯函数**：记录校验、按会话集合运算、标题截取（40–60 字不调模型）、摘要「收藏（本段）」目录生成 |
+| `core/favorite-score.js` | `decideFavoriteSuggest`, `parseFavoriteScore`, `normalizeFavoriteWords`, `matchFavoriteWord`, `buildFavoriteScoreSystemPrompt` | **0.5.3 推荐收藏判定纯函数**：模型 0-100 打分解析、三档阈值（60/75/85）、必亮/屏蔽词（大小写无关子串，屏蔽 > 必亮 > 分数）、太短/无分不亮 |
 | `core/pin-health.js` | `pinHealthOf`, `staleCauseTextOf`, `PIN_STALE_CAUSES` | **0.5.1 批 2（C 方案）pin 失效判定**：pin 快照 vs 当前 surface → `{live, stale, cause, causes}`；失效原因只读日志（replace 覆盖的 seq → compaction/start：`turn` 非空 = 原生自动压缩 native；turn=null = 其它压缩 other；无 replace 证据 = unknown），不猜 |
 | `core/native-pin-risk.js` | `nativePinnedRiskOf` | **0.5.1 批 2 原生压缩预判**：逐字复刻 compaction-basic 的 `selectCompactableRange`（保留尾部 retainTokens + 工具配对平衡回退），返回下一次原生压缩会覆盖的 pinned seq；只读、不触发压缩 |
 | `core/relay.js` | `RELAY_RECORD_TYPE`, `HISTORY_PREFIX`, `MAX_TITLE_BYTES`, `relayTitleOf`, `historyTitleOf`, `truncateTitleUtf8`, `splitHandoffTitle` | **接力链命名/解析纯函数**：交接标题「交接第 N 次：<原名>」、历史标题「历史 N：<原名>」生成；`splitHandoffTitle` 解析出 `baseTitle` / `handedOff` / `scheme`（`handoff-n` / `history-n` / `legacy`），旧链字段名与文案不变；`truncateTitleUtf8` + `MAX_TITLE_BYTES=80` 给标题做 UTF-8 预算（前缀先计入、只缩 base），与宿主 `session-title` 同口径 |
@@ -120,6 +122,9 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `dsh/sessions.js` | `createHandoffSession`, `handoffTitlePlanOf`, `childTitleOf`, `renameHistoryOf`, `presetIdOf`, `sourceTitleOf` | 交接内核：建会话+agent、挂工作区、改标题、followup 注入；**followup 后往子会话写 relay record**（ordinal/baseTitle/scheme/titleSeq，走 plugin record 通道）；链号优先读 record，旧会话才回退标题解析；`handoffTitlePlanOf` 决定本次链的 scheme（干净标题/历史 N → 新链 `history-n`；交接第 N 次/旧前缀/0.3 旧记录 → 旧链 `handoff-n`）；`renameHistoryOf` 在子会话建好后把旧会话改名「历史 N：<原名>」（幂等 guard + flush，失败只 warn） |
 | `dsh/handoff-archive.js` | `archiveHandoffSource`, `handoffArchiveNoteOf`, `isSessionArchived`, `isSessionPinned`, `pinnedSessionIdsOf`, `workspaceRegistryOf` | 0.5.0 旧会话归档/恢复接缝：`ctx.get('workspaceRegistry')` → `archiveSession(id)`（**绝不传 stopActivity**）、`unarchiveSession(id)`、`archivedSessionIds`；**0.5.1 批 2** 另读 `pinnedSessionIds`（宿主置顶集合；归档会在同一次写盘里取消置顶）→ `isSessionPinned`；活跃会话有限重试后降级 `active`，失败/缺接口一律不抛错；`handoffArchiveNoteOf` 统一用户文案（含 `skipped`/`pinned`） |
 | `dsh/state-hub.js` | `createStateHub` | 订阅 `session/event`：对 SSE 订阅者去抖推送 `readState`；0.3.4 起**无论有无订阅者都维护最新状态缓存**（`latestState(sessionId)` → `{ratio, window, compressHint}`），供 systemPrompt 同步读取 |
+| `dsh/favorites-file.js` | `readFavoritesFile`, `appendFavoriteRecord`, `favoriteMapOf`, `favoriteMapForRoot`, `favoriteStateOf`, `writeFavoriteSnapshots`, `appendSnapshotEntries`, `snapshotTextFor` | **0.5.3 收藏落盘**：项目级 JSONL（`~/.dsh/dcr-favorites/`，按链根 id 稳定定位、旧「标题-短 id」文件名只读兼容）、压缩时写摘要「收藏（本段）」目录 + `snapshots/<根id>.md`、压缩后补标记当场写快照（原文还在日志里才写） |
+| `dsh/favorite-scorer.js` | `scoreFavoriteMessage` | **0.5.3 推荐收藏模型调用**：flash/关思考/temp0 只回 JSON 分数；超时 8s、失败静默不亮（不重试、不阻塞主流程） |
+| `dsh/favorite-watch.js` | `createFavoriteWatcher`, `assistantTextOf` | **0.5.3 推荐收藏事件钩子**：监听 `session/event` 的助手消息，去抖 1.2s 只判每轮最后一条；必亮/屏蔽词先判（省钱）、已收藏不推荐；结果只进内存投影（≤3 条），**绝不写收藏** |
 | `dsh/site-info.js` | `buildSiteSnapshot`, `gitInfo`, `pendingJobs` | 交接单现场快照（启动时长、git、后台任务、模型），只读 |
 | `dsh/handoff-files.js` | `listHandoffFiles`, `countHandoffFiles`, `readHandoffFile` | 交接单目录只读访问（白名单、防穿越、512KB 上限）；`countHandoffFiles` 供列表 `total`（0.3.4 BUG-006） |
 | `dsh/session-files.js` | `changedFilesOf` | 从会话日志收集写/改过的文件（交接单程序段） |
@@ -136,7 +141,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 
 | 文件 | 导出 | 职责 |
 |---|---|---|
-| `actions/state.js` | `readState`, `resolveTarget` | 指示灯/菜单/命令/文档元信息共用的状态快照（含单调 `revision`）；0.5.0 F4 起下发只读 `chain` 与旧字段 `relay`；0.5.1 DCR-01 起 `chain` = **本会话入站记录**投影、另加 `next`（最近出站投影），`relay` 仍是最近一条记录；0.5.0 起下发 `parentArchived`（入站父会话是否在 registry 归档集合，true/false/null）；0.5.1 DCR-03 起下发 `capabilities.unarchive`（宿主有没有恢复归档会话的接缝）；**0.5.1 批 2**：`pins.stale`（失效 pin）/`pins.atRisk`（原生压缩预判覆盖）/`sessionPinned`（本会话是否侧栏置顶）；**0.5.1 批 3**：`nextArchived`（出站目标 next.childId 是否已归档；父→子入口据此先恢复再切） |
+| `actions/state.js` | `readState`, `resolveTarget` | 指示灯/菜单/命令/文档元信息共用的状态快照（含单调 `revision`）；0.5.0 F4 起下发只读 `chain` 与旧字段 `relay`；0.5.1 DCR-01 起 `chain` = **本会话入站记录**投影、另加 `next`（最近出站投影），`relay` 仍是最近一条记录；0.5.0 起下发 `parentArchived`（入站父会话是否在 registry 归档集合，true/false/null）；0.5.1 DCR-03 起下发 `capabilities.unarchive`（宿主有没有恢复归档会话的接缝）；**0.5.1 批 2**：`pins.stale`（失效 pin）/`pins.atRisk`（原生压缩预判覆盖）/`sessionPinned`（本会话是否侧栏置顶）；**0.5.1 批 3**：`nextArchived`（出站目标 next.childId 是否已归档；父→子入口据此先恢复再切）；**0.5.3**：`favorites`（当前会话收藏 seq/messageId 投影）与 `favoriteSuggest`（推荐收藏 ≤3 条建议，只点亮不收藏） |
 | `actions/better-compact.js` | `betterCompact`, `betterCompactLocked`, `previewBetterCompact`, `cancelBetterCompact` | 精压：锁 → 读压力 → 选段（避开锁定）→ idle 事务 → 结果 |
 | `actions/test-compact.js` | `testCompact` | `/bctest`：默认 dry-run，`confirm` 才真跑 |
 | `actions/handoff.js` | `handoff`, `previewHandoff` | 交接：预览（九段草稿+就绪清单）/ 执行（压缩→写盘→建会话→切换）；**成功后自动归档旧会话**（0.5.0，见 `dsh/handoff-archive`），归档失败不阻断；**0.5.1 批 2**：`archive:false` 只交接不归档；旧会话在侧栏置顶时必须 `confirmUnpin:true` 才归档（否则 `status:'pinned'`，不静默取消置顶） |
@@ -147,6 +152,8 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | `actions/settings.js` | `loadSettings`, `saveSettings`, `resetSettings` | 设置合并/校验/热替换；坏文件回落默认 + `settingsError` |
 | `actions/lock.js` | `withLock`, `isBusy` | 每会话单飞锁 |
 | `actions/inflight.js` | `createInflight` | 进行中动作的 AbortController 登记（取消用） |
+| `actions/favorite.js` | `toggleFavorite`, `markFavoriteBySeq`, `markFavoriteInSession`, `listFavorites`, `listFavoriteSuggestions`, `trialFavoriteScore`, `ownerAgentOfMessage`, `seqOfMessageId` | **0.5.3 收藏动作**：星标 toggle（按 messageId 反查会话，客户端 sessionId 错/缺也落对）、无活会话按 sessionId+seq 标记（链根解析）、补标记写快照兜底、`/favorite suggest` 读推荐投影、设置页「试算」（只读真实打分） |
+| `actions/force-archive.js` | `forceArchiveSession` | **0.5.2 L 项**：用户显式确认后强制归档旧会话（唯一传 `stopActivity:true` 的路径）；**0.5.3 P2**：already 判断先于 confirmStop（已归档+无确认回 200 already），已归档+确认时补停任务兜底，响应改 `archivedCount`/`newlyArchived`，按 404/503/500 标注错误码 |
 | `actions/pin.js` | `pinLastTurn`, `pinByIndex`, `unpinAll`, `listPins`, `togglePin` | 锁定/解锁（写 plugin record、候选列表） |
 | `actions/compress-hint.js` | `markCompressHint` | 记录模型「这里适合压缩」的判断（最小线/压缩线之间才允许） |
 | `actions/native-compaction.js` | `nativeCompactionInfo`, `setNativeAutoCompactionEnabled` | DSH 原生自动压缩：读配置/开关包装（写 profile 前备份） |
@@ -704,6 +711,33 @@ chain 是最近一条记录，可能是入站，回落会出现「跳回自己�
   「已锁 N 条 · 失效 M」仍在。
 - `test/archive.mjs` 产物守卫：源码与 bundle 都不得再含 `data-cr-pin-mark`；源码必须保留
   `marks: Array.isArray(data.pins.marks)` 与「位置标记归 0.6 时间线」注释。
+
+## 8.13 0.5.3 收藏与推荐收藏（pin 退役）
+
+### 两步走：标记 ≠ 落档
+
+- **标记**（点星 / `/favorite mark` / HTTP `favorite-mark`）：只往项目级 JSONL 追加
+  `{schema,op:'add'|'remove',sessionId,seq,at}`。不复制正文、不改压缩选段、不占模型预算；
+  **不依赖活 agent**（归档/关闭会话也能按 `sessionId+seq` 标），收藏文件按链根 id 定位
+  （`rootSessionIdOf(session)` → `dcr-favorites/<rootShort>.jsonl`；旧文件名只读兼容）。
+- **落档**（只在压缩事务里）：`actions/compact-run.js` 在摘要生成后把「本段已收藏」写进
+  摘要「收藏（本段）」目录（不调模型、失败不阻断），并把原文追加到
+  `dcr-favorites/snapshots/<根id>.md`（按 seq 标记去重）。
+- **补标记兜底**：压缩后才标、且原文还在会话日志里 → 标记时当场写快照；读不到明确报错
+  （0.5.3 不读会话档案拿原文，归 0.6）。所以「标了不压缩 = 只留序号」是产品口径。
+
+### 推荐收藏：只点亮，不自动收藏（红线）
+
+- 事件：`dsh/favorite-watch.js` 订阅 `session/event` 的 `assistant/message`，**去抖 1.2s**
+  只判每轮最后一条（工具步骤/中间态不判）；同一会话同时只跑一个打分。
+- 预判顺序（先便宜后花钱）：太短（<12 字）→ 屏蔽词 → 必亮词（命中直接亮，跳过模型）→
+  模型打分（flash/关思考/temp0，8s 超时）→ 档位阈值（60/75/85，默认 75）。
+- 结果：内存投影 `Map<sessionId, items[]>`（≤3），`readState.favoriteSuggest` 下发
+  `{seq,messageId,score,reason,matched}`；客户端星标加金色光晕。**不写收藏文件**（红线），
+  失败静默不亮（fail closed），已收藏的 seq 不再推荐。
+- 设置：`favorite.enabled/level/mustWords/muteWords`（schema 驱动，热生效）；「试算」走
+  `action:'favorite-score-trial'`（只读，返回 score/suggest/decisionReason）。
+- 缓存/成本：打分是独立侧调用，不参与主对话缓存前缀；每轮最多一次，超时即放弃。
 
 ## 9. 落地顺序（每步只动 1–2 个文件）
 

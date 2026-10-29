@@ -323,7 +323,10 @@ test('recover：从归档集合移除旧会话，并回报剩余集合', async (
   assert.equal(result.ok, true);
   assert.equal(result.recovered, true);
   assert.deepEqual(calls, ['session-old']);
-  assert.deepEqual(result.archivedSessionIds, ['session-other']);
+  // 0.5.3 P3-a：只回数量 + 本次恢复的 id，不再回全量归档集合。
+  assert.equal(result.archivedCount, 1);
+  assert.deepEqual(result.newlyRecovered, ['session-old']);
+  assert.equal(result.archivedSessionIds, undefined);
   assert.ok(result.message.includes('已恢复旧会话'));
 });
 
