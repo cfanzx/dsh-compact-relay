@@ -10,6 +10,9 @@
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![version](https://img.shields.io/badge/version-0.5.0-blue)](CHANGELOG.md)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/cfanzx/badge.svg)](https://hub.xerj.org/contributors/cfanzx)
+
+收录于 [XERJ Corpus Hub](https://hub.xerj.org/corpus/cfanzx--dsh-compact-relay) · 钉住 commit `435601b` · MIT · 带署名
 
 </div>
 

@@ -10,6 +10,9 @@
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![version](https://img.shields.io/badge/version-0.4.1-blue)](CHANGELOG.md)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/cfanzx/badge.svg)](https://hub.xerj.org/contributors/cfanzx)
+
+Indexed in the [XERJ Corpus Hub](https://hub.xerj.org/corpus/cfanzx--dsh-compact-relay) · pinned at `435601b` · MIT · with attribution
 
 </div>
 
