@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ownerAgentOfMessage, seqOfMessageId, toggleFavorite } from '../lib/actions/favorite.js';
+import { markFavoriteBySeq, markFavoriteInSession, ownerAgentOfMessage, seqOfMessageId, toggleFavorite } from '../lib/actions/favorite.js';
 
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dcr-favorite-'));
 process.env.DSH_HOME = tmpHome;
@@ -88,5 +88,124 @@ assert.throws(
   (error) => error.code === 'favorite',
 );
 
+// 6) 无活会话按 sessionId+seq 标记：链根用 readSessionHeader 的 parentSession 链解析
+const headers = {
+  'session-child2': { parentSession: 'session-child1' },
+  'session-child1': { parentSession: 'session-root0001' },
+};
+const markDeps = {
+  ctx: {
+    get: (name) =>
+      name === 'workspaceRegistry'
+        ? {
+            readSessionHeader: async (id) => {
+              if (headers[id] === undefined) throw new Error('no such session');
+              return headers[id];
+            },
+          }
+        : undefined,
+  },
+};
+const marked = await markFavoriteBySeq(markDeps, { sessionId: 'session-child2', seq: 7 });
+assert.equal(marked.active, true);
+assert.equal(marked.count, 1);
+const canonical = path.join(tmpHome, 'dcr-favorites', 'root0001.jsonl');
+assert.equal(fs.existsSync(canonical), true);
+const readLines = () =>
+  fs
+    .readFileSync(canonical, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line));
+assert.equal(readLines()[0].sessionId, 'session-child2');
+assert.equal(readLines()[0].seq, 7);
+
+// 7) 显式 active:true 幂等：已是目标状态不重复写
+const again = await markFavoriteBySeq(markDeps, { sessionId: 'session-child2', seq: 7, active: true });
+assert.equal(again.active, true);
+assert.equal(again.note, 'already');
+assert.equal(readLines().length, 1);
+
+// 8) 省略 active = 切换：再点一次就取消；显式 active:false 已达标也幂等
+const toggledOff = await markFavoriteBySeq(markDeps, { sessionId: 'session-child2', seq: 7 });
+assert.equal(toggledOff.active, false);
+assert.equal(toggledOff.count, 0);
+assert.equal(readLines().length, 2);
+const offAgain = await markFavoriteBySeq(markDeps, { sessionId: 'session-child2', seq: 7, active: false });
+assert.equal(offAgain.note, 'already');
+assert.equal(readLines().length, 2);
+
+// 9) 旧文件名只读兼容：有「标题-短id」文件就继续写它，不另建规范文件
+fs.mkdirSync(path.join(tmpHome, 'dcr-favorites'), { recursive: true });
+const legacyFile = path.join(tmpHome, 'dcr-favorites', '旧标题-abcd1234.jsonl');
+fs.writeFileSync(
+  legacyFile,
+  `${JSON.stringify({ schema: 'dcr-favorite/v1', op: 'add', sessionId: 'session-abcd1234', seq: 3, at: 1 })}\n`,
+  'utf8',
+);
+const legacyDeps = { ctx: { get: () => undefined } }; // 没有 registry：解析不到根 → 按 sessionId 当根
+await markFavoriteBySeq(legacyDeps, { sessionId: 'session-abcd1234', seq: 9 });
+const legacyLines = fs
+  .readFileSync(legacyFile, 'utf8')
+  .split('\n')
+  .filter((line) => line.trim().length > 0);
+assert.equal(legacyLines.length, 2);
+assert.equal(fs.existsSync(path.join(tmpHome, 'dcr-favorites', 'abcd1234.jsonl')), false);
+
+// 10) 命令 /favorite mark：不带 seq = 最后一条已完成助手回复
+const cmdSession = makeSession('session-cmd00001', [
+  { type: 'user/message', id: 'u1' },
+  { type: 'assistant/message', id: 'a1' },
+  { type: 'user/message', id: 'u2' },
+  { type: 'assistant/message', id: 'a2' },
+]);
+const cmdDeps = { ctx: { agents: { list: () => [] } } };
+const cmdAgent = { id: 'session-cmd00001', session: cmdSession };
+const cmdMarked = markFavoriteInSession(cmdDeps, { agent: cmdAgent });
+assert.equal(cmdMarked.active, true);
+assert.equal(cmdMarked.seq, 4); // a2 的 seq
+assert.equal(markFavoriteInSession(cmdDeps, { agent: cmdAgent }).note, 'already');
+
+// 11) 指定不存在的 seq / 非法参数 → 明确报错（不静默）
+assert.throws(
+  () => markFavoriteInSession(cmdDeps, { agent: cmdAgent, seq: 999 }),
+  (error) => error.code === 'favorite' && /没有 seq 999/.test(error.message),
+);
+await assert.rejects(
+  () => markFavoriteBySeq(markDeps, { sessionId: 'session-child2', seq: Number.NaN }),
+  (error) => error.code === 'favorite',
+);
+await assert.rejects(() => markFavoriteBySeq(markDeps, { seq: 1 }), (error) => error.code === 'favorite');
+
+// 12) P0-3 兜底：已被压走、但原文还在日志里 → 标的时候当场写快照
+const snapSession = {
+  id: 'session-cmd00002',
+  log: [
+    { seq: 1, type: 'user/message', data: { id: 'su1', source: { kind: 'user' }, content: '问题' } },
+    { seq: 2, type: 'assistant/message', data: { message: { id: 'sa-old', content: [{ type: 'text', text: '旧结论原文' }] } } },
+    { seq: 3, type: 'user/message', data: { id: 'su2', source: { kind: 'user' }, content: '继续' } },
+    { seq: 4, type: 'assistant/message', data: { message: { id: 'sa-new', content: [{ type: 'text', text: '新回复' }] } } },
+  ],
+  surface: { nodes: [3, 4] },
+  eventAt(seq) {
+    return this.log.find((event) => event.seq === seq);
+  },
+};
+const snapAgent = { id: snapSession.id, session: snapSession };
+const snapDeps = { ctx: { agents: { list: () => [] } } };
+const snapMarked = markFavoriteInSession(snapDeps, { agent: snapAgent, seq: 2 });
+assert.equal(snapMarked.active, true);
+assert.equal(snapMarked.snapshot, 'written');
+const snapFile = path.join(tmpHome, 'dcr-favorites', 'snapshots', 'cmd00002.md');
+assert.equal(fs.existsSync(snapFile), true);
+assert.match(fs.readFileSync(snapFile, 'utf8'), /旧结论原文/);
+const snapAgain = markFavoriteInSession(snapDeps, { agent: snapAgent, seq: 2 });
+assert.equal(snapAgain.note, 'already');
+assert.equal(snapAgain.snapshot, 'present');
+const liveMarked = markFavoriteInSession(snapDeps, { agent: snapAgent, seq: 4 });
+assert.equal(liveMarked.snapshot, 'none'); // 还在界面上：不需要兜底
+
 console.log('PASS  收藏动作：messageId 反查会话 + 传错 agent 自愈 + 候选不唯一/找不到时明确报错');
-console.log('favorite：5/5 通过');
+console.log('PASS  收藏标记解耦：无活会话按 sessionId+seq 写标记（链根解析/规范文件名/幂等/旧名兼容/命令 mark）');
+console.log('PASS  收藏补标兜底：已压走但日志还在 → 标记时当场写快照（可读回原文）');
+console.log('favorite：12/12 通过');
