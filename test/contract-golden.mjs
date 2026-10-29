@@ -368,6 +368,7 @@ const FRAME_KEYS = [
   'compactRange',
   'compactRangeReason',
   'compressHint',
+  'favoriteSuggest',
   'favorites',
   'level',
   'native',
@@ -435,6 +436,7 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favoriteSuggest[]=empty
 favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
@@ -507,6 +509,7 @@ compactRange.startSeq=number
 compactRange.tokens=number
 compactRangeReason=string
 compressHint=null
+favoriteSuggest[]=empty
 favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
@@ -583,6 +586,7 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favoriteSuggest[]=empty
 favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
@@ -678,6 +682,7 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favoriteSuggest[]=empty
 favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
@@ -767,6 +772,7 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favoriteSuggest[]=empty
 favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
@@ -843,6 +849,7 @@ colors.palette.light.stage=string
 compactRange=null
 compactRangeReason=null
 compressHint=null
+favoriteSuggest[]=empty
 favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
