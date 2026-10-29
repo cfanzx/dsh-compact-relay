@@ -20,6 +20,7 @@ import {
   parseFavoriteScore,
 } from '../lib/core/favorite-score.js';
 import { DEFAULT_CONFIG } from '../lib/core/config-schema.js';
+import { listFavoriteSuggestions } from '../lib/actions/favorite.js';
 import { scoreFavoriteMessage } from '../lib/dsh/favorite-scorer.js';
 import { createFavoriteWatcher } from '../lib/dsh/favorite-watch.js';
 
@@ -164,6 +165,76 @@ const offWatcher = createFavoriteWatcher({ ...watcherDeps, cfg: { favorite: { en
 offWatcher.onEvent(session, mustEvent);
 await new Promise((resolve) => setTimeout(resolve, 1400));
 assert.deepEqual(offWatcher.suggestionOf(session.id), []);
+
+// ---------- 3b) 0.5.4 D3：压缩后清空建议投影（被压走的 seq 不能残留） ----------
+// 此时 watcher 里有一条 seq7 建议（必亮词命中）。
+watcher.onEvent(session, { seq: 20, type: 'compaction/summary', data: { compactionId: 'c1' } });
+assert.deepEqual(watcher.suggestionOf(session.id), [], 'compaction/summary 后本会话建议立即清空');
+// `/favorite suggest` 读的就是这份投影：压缩后不能再列出被压走的 seq。
+const afterClearListing = listFavoriteSuggestions({ favoriteWatch: watcher }, { agent: { session } });
+assert.deepEqual(afterClearListing.suggestions, [], '/favorite suggest 压缩后不再列出旧建议');
+assert.equal(afterClearListing.message.includes('暂时没有推荐'), true, '命令文案回到「暂时没有推荐」');
+
+// 压缩后新回合照常打分（去抖 / 每回合一次 / 只判最后一条 均不受影响）。
+const afterCompactEvent = {
+  seq: 21,
+  type: 'assistant/message',
+  data: { message: { id: 'msg-after-compact', content: [{ type: 'text', text: '压缩之后这个方案也定案了。' }] } },
+};
+watcher.onEvent(session, afterCompactEvent);
+await new Promise((resolve) => setTimeout(resolve, 1400));
+const afterCompact = watcher.suggestionOf(session.id);
+assert.equal(afterCompact.length, 1);
+assert.equal(afterCompact[0].seq, 21, '压缩后新消息仍能产生建议');
+
+// 去抖窗口内压缩：待跑的打分要取消，不能把旧 seq 又写回建议。
+const pendingEvent = {
+  seq: 22,
+  type: 'assistant/message',
+  data: { message: { id: 'msg-pending', content: [{ type: 'text', text: '压缩前刚发的这条也定案了。' }] } },
+};
+watcher.onEvent(session, pendingEvent);
+watcher.onEvent(session, { seq: 23, type: 'compaction/end', data: { compactionId: 'c1' } });
+await new Promise((resolve) => setTimeout(resolve, 1400));
+assert.deepEqual(watcher.suggestionOf(session.id), [], '去抖窗口内压缩 → 旧消息打分被取消');
+
+// 模型打分在跑时压缩：旧世代结果丢弃（不会事后把被压走的 seq 写回建议）。
+const slowDeps = {
+  ctx: {
+    llm: {
+      stream: async function* () {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        yield '{"score":92,"reason":"结论"}';
+      },
+    },
+  },
+  engine: { BlockAssembler: StubAssembler },
+  cfg: { favorite: { enabled: true, level: 'standard', mustWords: [], muteWords: [] } },
+};
+const slowWatcher = createFavoriteWatcher(slowDeps);
+const inFlightEvent = {
+  seq: 30,
+  type: 'assistant/message',
+  data: { message: { id: 'msg-inflight', content: [{ type: 'text', text: '这是一段足够长的助手回复，内容涉及系统架构与取舍。' }] } },
+};
+slowWatcher.onEvent(session, inFlightEvent);
+await new Promise((resolve) => setTimeout(resolve, 1300)); // 去抖到点，模型打分在跑（300ms）
+slowWatcher.onEvent(session, { seq: 31, type: 'compaction/summary', data: { compactionId: 'c2' } });
+await new Promise((resolve) => setTimeout(resolve, 600));
+assert.deepEqual(slowWatcher.suggestionOf(session.id), [], '压缩后旧世代的模型打分结果要丢弃');
+slowWatcher.close();
+
+// 其它事件不误清：compaction/start 只是开始（可能失败），不清建议。
+const keepWatcher = createFavoriteWatcher(watcherDeps);
+keepWatcher.onEvent(session, mustEvent);
+await new Promise((resolve) => setTimeout(resolve, 1400));
+keepWatcher.onEvent(session, { seq: 40, type: 'compaction/start', data: { compactionId: 'c3' } });
+assert.equal(keepWatcher.suggestionOf(session.id).length, 1, 'compaction/start 不清建议（事务可能失败）');
+keepWatcher.close();
+
+console.log(
+  'PASS  0.5.4 D3 压缩清理：summary/end 清空建议 + 取消待跑打分 + 丢弃在跑旧世代结果 + start 不误清',
+);
 
 // 红线：任何路径都不写收藏文件
 assert.equal(fs.existsSync(path.join(tmpHome, 'dcr-favorites')), false);

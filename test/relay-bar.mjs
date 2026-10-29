@@ -1959,6 +1959,41 @@ test('压缩预览卡收藏区：老宿主没有 favoritePreview 字段 → 不�
   assert.deepEqual(favoriteMarkCalls(harness), [], '不渲染收藏区时也不会偷偷发收藏请求');
 });
 
+test('压缩预览卡收藏区（0.5.4）：工具条目保留在已收藏列表、无正文标题显示「第 N 条」', async () => {
+  const harness = loadBundle();
+  // 服务端 0.5.4：建议已过滤工具角色；收藏条目保留工具（用户可能真收藏了），无正文标题换成「第 N 条」。
+  harness.setCompactPreviewResponse({
+    ok: true,
+    planId: 'plan-054',
+    preview: {
+      nodes: 3,
+      tokens: 900,
+      startSeq: 1,
+      endSeq: 3,
+      planId: 'plan-054',
+      tooSmall: false,
+      favoritePreview: {
+        total: 3,
+        favoritedCount: 2,
+        favorited: [
+          { seq: 9, role: '工具', title: '第 9 条' },
+          { seq: 10, role: '助手', title: '决定采用方案 B' },
+        ],
+        suggest: [{ seq: 11, role: '用户', reason: '明确要求别改', snippet: '不要动 lib/api.js 的公开接口' }],
+      },
+    },
+  });
+  const renderer = await openCompactPreview(harness);
+
+  assert.equal(textOf(findByAttr(renderer.tree, 'data-cr-favorite-summary')), '本段 3 条 · 已收藏 2 条 · 建议补 1 条');
+  const favoritedRows = findAll(renderer.tree, (node) => node.props?.['data-cr-favorite-item'] !== undefined);
+  assert.equal(textOf(favoritedRows[0]), '[工具] 第 9 条', '工具条目保留，无正文标题显示「第 N 条」而不是「（无文本）」');
+  assert.equal(textOf(favoritedRows[1]), '[助手] 决定采用方案 B');
+  const suggestText = textOf(findByAttr(renderer.tree, 'data-cr-favorite-suggest-row'));
+  assert.equal(suggestText.includes('[用户]'), true, '建议区只渲染服务端给的用户/助手候选');
+  assert.equal(suggestText.includes('[工具]'), false, '建议区不出现工具角色');
+});
+
 /* ------------------------------------------------------------------ *
  * 9. 执行
  * ------------------------------------------------------------------ */

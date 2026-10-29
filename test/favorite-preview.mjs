@@ -42,6 +42,9 @@ function userMsg(text, source = { kind: 'user' }) {
 function assistantMsg(text) {
   return { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text }] } } };
 }
+function toolMsg(text) {
+  return { type: 'tool/result', data: { message: { role: 'tool', content: [{ type: 'text', text }] } } };
+}
 
 const cfg = resolveConfig({ retention: { recentTailTokens: 0 } });
 const engine = {
@@ -204,5 +207,108 @@ assert.equal(manyFavorite.total, 25);
 assert.equal(manyPreview.preview.favoriteHits.inRange, 25);
 
 console.log('PASS  0.6 预览收藏：已收藏 > DIRECTORY_MAX 时条目截断、favoritedCount 仍全量');
+
+/* ================================================================== *
+ * ⑤ 0.5.4 D1：「建议补收藏」只保留用户/助手（工具结果的报错堆栈不进建议）
+ * ================================================================== */
+
+const toolSession = new MockSession({
+  id: 'session-fav-tool-suggest',
+  events: [
+    userMsg('不要动 lib/api.js 的公开接口，必须保持原样'), // seq0 候选：用户「别改」
+    assistantMsg('决定改用事件驱动（方案 B），结论已写进交接单'), // seq1 候选：关键决策
+  ],
+});
+// 真实 DSH 里 tool/result 也在 surface 上；MockSession 只把 message 事件加到 surface，
+// 这里手动补一个工具结果节点（报错堆栈 → suggestPinCandidates 会给出「工具」候选）。
+const toolEvent = toolSession.append(
+  'tool/result',
+  toolMsg('ReferenceError: cfg is not defined\n    at run (/app/index.js:12:5)').data,
+);
+toolSession.surface.nodes.push(toolEvent.seq);
+const toolAgent = { id: 'agent-fav-tool', session: toolSession };
+const toolPreview = await previewBetterCompact(deps, { agent: toolAgent });
+
+// 兼容字段 pinSuggest 识别层不变：工具候选仍在（只是不进「建议收藏」）。
+assert.equal(
+  toolPreview.preview.pinSuggest.items.some((item) => item.role === '工具'),
+  true,
+  '识别层仍产出工具候选（pinSuggest 兼容字段不改）',
+);
+const toolSuggest = toolPreview.preview.favoritePreview.suggest;
+assert.equal(
+  toolSuggest.some((item) => item.seq === toolEvent.seq),
+  false,
+  '工具结果的报错堆栈不进「建议先收藏」',
+);
+assert.deepEqual(
+  toolSuggest.map((item) => item.role),
+  ['用户', '助手'],
+  '建议只保留用户/助手',
+);
+assert.equal(toolPreview.message.includes('这 2 条还没收藏'), true, '预览文案数量不含工具候选');
+
+// 工具输出仍可被用户手动收藏：favorited 列表不过滤工具角色。
+await markFavoriteBySeq(deps, { sessionId: toolSession.id, seq: toolEvent.seq, active: true });
+const toolPreview2 = await previewBetterCompact(deps, { agent: toolAgent });
+assert.deepEqual(
+  toolPreview2.preview.favoritePreview.favorited.map((item) => item.seq),
+  [toolEvent.seq],
+  '工具输出仍可手动收藏',
+);
+assert.equal(toolPreview2.preview.favoritePreview.favorited[0].role, '工具');
+
+console.log('PASS  0.5.4 D1 建议收藏：过滤工具角色（pinSuggest 识别不变），工具输出仍可手动收藏');
+
+// 边界（真机场景）：工具候选占满识别上限（5）时，用户/助手候选不能被挤掉。
+// 识别层 limit 在角色过滤前生效 → 这里用同一套识别对「只看用户/助手的事件」重跑一遍。
+const crowdedSession = new MockSession({
+  id: 'session-fav-crowded-suggest',
+  events: [
+    ...Array.from({ length: 5 }, (_, index) =>
+      toolMsg(`TypeError: t${index} is not a function\n    at run (/app/i${index}.js:1:1)`),
+    ),
+    assistantMsg('决定改用事件驱动（方案 B），结论写进交接单'), // seq5 关键决策
+  ],
+});
+// MockSession 只把 message 事件放进 surface；真实 DSH 里 tool/result 也在 surface 上，手动补。
+for (let seq = 0; seq < 5; seq += 1) crowdedSession.surface.nodes.push(seq);
+const crowdedAgent = { id: 'agent-fav-crowded', session: crowdedSession };
+const crowdedPreview = await previewBetterCompact(deps, { agent: crowdedAgent });
+assert.equal(crowdedPreview.preview.pinSuggest.items.length, 5, '兼容字段：5 个名额被工具候选占满（复现真机）');
+assert.equal(
+  crowdedPreview.preview.pinSuggest.items.every((item) => item.role === '工具'),
+  true,
+  '识别上限先于角色过滤生效',
+);
+const crowdedSuggest = crowdedPreview.preview.favoritePreview.suggest;
+assert.deepEqual(crowdedSuggest.map((item) => item.seq), [5], '工具占满名额时，助手候选仍要出现在「建议收藏」');
+assert.equal(crowdedSuggest[0].role, '助手');
+
+console.log('PASS  0.5.4 D1 边界：工具候选占满 5 个名额时，用户/助手候选不被挤掉');
+
+/* ================================================================== *
+ * ⑥ 0.5.4 D2：无正文收藏条目的标题兜底成「第 <seq> 条」
+ * ================================================================== */
+
+const blankSession = new MockSession({
+  id: 'session-fav-blank-title',
+  events: [
+    // 无正文用户消息（如纯图片/附件消息）：surface 上有节点，但抠不出文本。
+    { type: 'user/message', data: { content: [], source: { kind: 'user' } } },
+    userMsg('第二条有正文，用来确认同段里有正常条目'),
+  ],
+});
+const blankAgent = { id: 'agent-fav-blank', session: blankSession };
+await markFavoriteBySeq(deps, { sessionId: blankSession.id, seq: 0, active: true });
+const blankPreview = await previewBetterCompact(deps, { agent: blankAgent });
+const blankFavorited = blankPreview.preview.favoritePreview.favorited;
+assert.equal(blankFavorited.length, 1);
+assert.equal(blankFavorited[0].seq, 0);
+assert.equal(blankFavorited[0].role, '用户');
+assert.equal(blankFavorited[0].title, '第 0 条', '无文本标题兜底成「第 <seq> 条」');
+assert.equal(blankFavorited[0].title.includes('无文本'), false, '预览卡不再出现「（无文本）」占位');
+
+console.log('PASS  0.5.4 D2 无文本标题：收藏条目兜底成「第 <seq> 条」（buildFavoriteTitle 不动）');
 
 console.log(`\nfavorite-preview：DSH_HOME=${tmpHome}`);
