@@ -418,7 +418,9 @@ test('HTTP recover：不需要活 agent，200 返回恢复结果', async () => {
 
 test('客户端/服务端产物：恢复入口与 recover 动作真的在源码/构建产物里', () => {
   const httpSource = fs.readFileSync(`${repoRoot}lib/adapters/http.js`, 'utf8');
-  assert.ok(httpSource.includes("parsed.action !== 'native-auto' && parsed.action !== 'recover'"));
+  // 2026-10-29：会话可选动作改由 sessionOptionalAction 统一判断（favorite-toggle 也加入例外）。
+  assert.ok(httpSource.includes('sessionOptionalAction'));
+  assert.ok(httpSource.includes("parsed.action === 'favorite-toggle'"));
   assert.ok(httpSource.includes("parsed.action === 'recover'"));
   assert.ok(httpSource.includes('recoverArchivedSession'));
 
