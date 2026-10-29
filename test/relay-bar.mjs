@@ -192,6 +192,39 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
     changedFiles: [],
     attempts: 1,
   };
+  // 0.6 压缩预览卡收藏区：preview 动作的响应（外层 {ok, planId, preview}）。
+  // preview.favoritePreview 是服务端 additive 字段——卡片据此渲染「已收藏 / 建议补」两块。
+  let compactPreviewResponse = {
+    ok: true,
+    planId: 'plan-favorite-1',
+    preview: {
+      nodes: 5,
+      tokens: 1200,
+      startSeq: 1,
+      endSeq: 5,
+      planId: 'plan-favorite-1',
+      tooSmall: false,
+      favoriteHits: { inRange: 2, total: 5 },
+      favoritePreview: {
+        total: 5,
+        favoritedCount: 2,
+        favorited: [
+          { seq: 1, role: '用户', title: '不要改 lib/api.js 的公开接口…' },
+          { seq: 4, role: '助手', title: '决定采用方案 B（事件驱动替代轮询）…' },
+        ],
+        suggest: [
+          {
+            seq: 2,
+            role: '助手',
+            reason: '报错堆栈',
+            snippet: 'TypeError: cb is not a function at run (/app/index.js:12:5)',
+          },
+        ],
+      },
+    },
+  };
+  // 0.6 卡片内「收藏」按钮的响应（默认成功；测试可换 400 失败）。
+  let favoriteMarkResponse = { ok: true, active: true, seq: 2, count: 3, message: '已收藏第 2 条' };
 
   const sandbox = {
     console,
@@ -268,6 +301,17 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
             : jsonResponse(200, response),
         );
       }
+      // 0.6 压缩预览（只读）与卡内「收藏」（favorite-mark，按 sessionId+seq）。
+      // 支持 `{status, payload}` 模拟失败；直接传 payload 默认 200。
+      if (body.action === 'preview' || body.action === 'favorite-mark') {
+        const source = body.action === 'preview' ? compactPreviewResponse : favoriteMarkResponse;
+        const response = typeof source === 'function' ? source(body) : source;
+        return Promise.resolve(
+          response !== null && typeof response === 'object' && typeof response.status === 'number'
+            ? jsonResponse(response.status, response.payload ?? response)
+            : jsonResponse(200, response),
+        );
+      }
       // recoverFails / recoverFailTimes：插件 HTTP recover 通道失败（测双通道重试）。
       const failing = recoverFails || actionCalls.length <= recoverFailTimes;
       return Promise.resolve(
@@ -336,6 +380,14 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   function setForceArchiveResponse(response) {
     forceArchiveResponse = response;
   }
+  /** 0.6：设置压缩预览（preview 动作）的响应（直接传 payload 默认 200；`{status,payload}` 可模拟失败）。 */
+  function setCompactPreviewResponse(response) {
+    compactPreviewResponse = response;
+  }
+  /** 0.6：设置卡内收藏（favorite-mark 动作）的响应。 */
+  function setFavoriteMarkResponse(response) {
+    favoriteMarkResponse = response;
+  }
   /**
    * 0.5.1 DCR-05：设置 `/api/compact-relay-chain` 的响应。
    * 传 `{status, payload}` 可模拟老宿主（404）；直接传 payload 默认 200。
@@ -371,7 +423,7 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   function fire(type, event) {
     for (const handler of listeners[type] ?? []) handler(event);
   }
-  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, setForceArchiveResponse, failState, healState, mount, mountLeft, fire };
+  return { registered, sandbox, fetches, openCalls, unarchiveCalls, actionCalls, setState, setDoc, setChainResponse, setForceArchiveResponse, setCompactPreviewResponse, setFavoriteMarkResponse, failState, healState, mount, mountLeft, fire };
 }
 
 const SESSION_ID = 'session-new-0001';
@@ -1791,6 +1843,120 @@ test('强制归档：旧会话已归档时不再显示强制入口（只保留�
   const { renderer } = await mountForceMenu({ parentArchived: true });
   assert.equal(forceItemOf(renderer.tree), null);
   assert.ok(actionKeys(renderer.tree).includes('unarchive'));
+});
+
+/* ------------------------------------------------------------------ *
+ * 8c. 0.6 压缩预览卡收藏区
+ *   汇总行「本段 N 条 · 已收藏 M 条 · 建议补 K 条」/ 已收藏条目 [用户][助手] /
+ *   建议补收藏条目（role·reason：snippet + 收藏按钮）/ 点收藏走 favorite-mark。
+ *   红线：打开卡片不自动收藏（不点按钮零请求）；失败不假装成功、只在卡内轻提示。
+ * ------------------------------------------------------------------ */
+
+/** 打开「确认压缩」卡：state 需要 compactRange 才能点菜单里的压缩入口。 */
+async function openCompactPreview(harness) {
+  harness.setState(indicatorState({ compactRange: { nodes: 5, tokens: 1200 } }));
+  const { renderer, trigger } = await mountIndicator(harness);
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const compactItem = findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'compact')[0];
+  assert.ok(compactItem !== undefined, '菜单应有压缩入口');
+  compactItem.props.onClick();
+  await renderer.settle();
+  assert.ok(findByAttr(renderer.tree, 'data-cr-preview') !== null, '应打开压缩预览卡');
+  return renderer;
+}
+
+const favoriteMarkCalls = (harness) => harness.actionCalls.filter((call) => call.action === 'favorite-mark');
+
+test('压缩预览卡收藏区：汇总行/已收藏条目/建议补列表齐全，打开卡片不自动收藏', async () => {
+  const harness = loadBundle();
+  const renderer = await openCompactPreview(harness);
+
+  const summary = findByAttr(renderer.tree, 'data-cr-favorite-summary');
+  assert.ok(summary !== null, '收藏区要有汇总行');
+  assert.equal(textOf(summary), '本段 5 条 · 已收藏 2 条 · 建议补 1 条');
+
+  const favoritedRows = findAll(renderer.tree, (node) => node.props?.['data-cr-favorite-item'] !== undefined);
+  assert.deepEqual(
+    favoritedRows.map((node) => node.props['data-cr-favorite-item']),
+    ['1', '4'],
+    '已收藏条目按 seq 渲染',
+  );
+  assert.equal(textOf(favoritedRows[0]), '[用户] 不要改 lib/api.js 的公开接口…', '用户条目显示 [用户] + 标题片段');
+  assert.equal(textOf(favoritedRows[1]), '[助手] 决定采用方案 B（事件驱动替代轮询）…', '助手条目显示 [助手] + 标题片段');
+
+  const suggestRow = findByAttr(renderer.tree, 'data-cr-favorite-suggest-row');
+  assert.ok(suggestRow !== null, '建议补收藏要有条目');
+  const suggestText = textOf(suggestRow);
+  assert.equal(suggestText.includes('[助手]'), true, '建议条目显示角色');
+  assert.equal(suggestText.includes('报错堆栈'), true, '建议条目显示推荐理由');
+  assert.equal(suggestText.includes('TypeError: cb is not a function'), true, '建议条目显示摘要');
+  const markButton = findByAttr(renderer.tree, 'data-cr-favorite-mark');
+  assert.equal(textOf(markButton), '收藏', '每条建议带「收藏」按钮');
+
+  // 红线：只提示、绝不自动收藏——没点按钮就不能有 favorite-mark 请求。
+  assert.deepEqual(favoriteMarkCalls(harness), [], '打开预览卡不得自动收藏');
+});
+
+test('压缩预览卡收藏区：点「收藏」→ favorite-mark(sessionId,seq) → 行变「已收藏 ✓」+计数更新', async () => {
+  const harness = loadBundle();
+  const renderer = await openCompactPreview(harness);
+
+  findByAttr(renderer.tree, 'data-cr-favorite-mark').props.onClick();
+  await renderer.settle();
+
+  assert.deepEqual(
+    favoriteMarkCalls(harness),
+    [{ action: 'favorite-mark', sessionId: SESSION_ID, seq: 2, active: true }],
+    '按 sessionId+seq 收藏；active:true 只加不切换（预览数据过期也不会误取消）',
+  );
+  assert.equal(findByAttr(renderer.tree, 'data-cr-favorite-mark'), null, '成功后按钮收起');
+  const done = findByAttr(renderer.tree, 'data-cr-favorite-done');
+  assert.ok(done !== null, '该行要变成「已收藏 ✓」');
+  assert.equal(textOf(done), '已收藏 ✓');
+  assert.equal(textOf(findByAttr(renderer.tree, 'data-cr-favorite-summary')), '本段 5 条 · 已收藏 3 条 · 建议补 0 条');
+  const favoritedRows = findAll(renderer.tree, (node) => node.props?.['data-cr-favorite-item'] !== undefined);
+  assert.equal(favoritedRows.length, 3, '刚收藏的条目要补进「本段已收藏」列表');
+  assert.equal(textOf(favoritedRows[2]).includes('TypeError: cb is not a function'), true);
+});
+
+test('压缩预览卡收藏区：收藏失败 → 卡内轻提示、不假装成功、可重试', async () => {
+  const harness = loadBundle();
+  harness.setFavoriteMarkResponse({
+    status: 400,
+    payload: { ok: false, message: '这条工作的收藏已达上限 500 条，先取消一些' },
+  });
+  const renderer = await openCompactPreview(harness);
+
+  findByAttr(renderer.tree, 'data-cr-favorite-mark').props.onClick();
+  await renderer.settle();
+  const error = findByAttr(renderer.tree, 'data-cr-favorite-error');
+  assert.ok(error !== null, '失败要在卡内给轻提示');
+  assert.equal(textOf(error).includes('已达上限'), true, '提示要用宿主给的原因');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-favorite-done'), null, '失败不能显示已收藏');
+  assert.equal(textOf(findByAttr(renderer.tree, 'data-cr-favorite-summary')), '本段 5 条 · 已收藏 2 条 · 建议补 1 条', '失败不改计数');
+
+  // 重试：换成成功后提示消失、行变已收藏。
+  harness.setFavoriteMarkResponse({ ok: true, active: true, seq: 2, count: 3, message: '已收藏第 2 条' });
+  findByAttr(renderer.tree, 'data-cr-favorite-mark').props.onClick();
+  await renderer.settle();
+  assert.equal(findByAttr(renderer.tree, 'data-cr-favorite-error'), null, '重试成功后提示消失');
+  assert.ok(findByAttr(renderer.tree, 'data-cr-favorite-done') !== null);
+  assert.equal(favoriteMarkCalls(harness).length, 2);
+});
+
+test('压缩预览卡收藏区：老宿主没有 favoritePreview 字段 → 不渲染收藏区（既有确认流程不受影响）', async () => {
+  const harness = loadBundle();
+  harness.setCompactPreviewResponse({
+    ok: true,
+    planId: 'plan-old-host',
+    preview: { nodes: 3, tokens: 900, startSeq: 1, endSeq: 3, planId: 'plan-old-host', tooSmall: false },
+  });
+  const renderer = await openCompactPreview(harness);
+
+  assert.equal(findByAttr(renderer.tree, 'data-cr-favorite-preview'), null, '老宿主没有新字段就不渲染收藏区');
+  assert.ok(findByAttr(renderer.tree, 'data-cr-confirm-run') !== null, '确认压缩按钮照常可用（契约没被破坏）');
+  assert.deepEqual(favoriteMarkCalls(harness), [], '不渲染收藏区时也不会偷偷发收藏请求');
 });
 
 /* ------------------------------------------------------------------ *

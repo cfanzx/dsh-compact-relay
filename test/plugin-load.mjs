@@ -428,6 +428,35 @@ const noAgentPin = callRoute(host, '/api/compact-relay-action', {
 await new Promise((resolve) => setTimeout(resolve, 80));
 assert.equal(noAgentPin.status, 409);
 
+// 0.6 预览卡收藏：favorite-mark 按 sessionId+seq 收藏，**不需要活 agent**（归档/关闭会话也能标）。
+// 客户端会显式带 active:true（只加不切换）：重复请求幂等，预览数据过期也不会误取消收藏。
+const favoriteMarkPayload = { action: 'favorite-mark', sessionId: 'session-archived', seq: 3, active: true };
+const favoriteMarkRes = callRoute(host, '/api/compact-relay-action', {
+  method: 'POST',
+  body: JSON.stringify(favoriteMarkPayload),
+});
+await new Promise((resolve) => setTimeout(resolve, 80));
+assert.equal(favoriteMarkRes.status, 200, 'favorite-mark 不要求活会话');
+const favoriteMark = JSON.parse(favoriteMarkRes.body);
+assert.equal(favoriteMark.ok, true);
+assert.equal(favoriteMark.active, true);
+assert.equal(favoriteMark.seq, 3);
+assert.equal(favoriteMark.sessionId, 'session-archived');
+const favoriteMarkAgain = callRoute(host, '/api/compact-relay-action', {
+  method: 'POST',
+  body: JSON.stringify(favoriteMarkPayload),
+});
+await new Promise((resolve) => setTimeout(resolve, 80));
+const favoriteMarkAgainBody = JSON.parse(favoriteMarkAgain.body);
+assert.equal(favoriteMarkAgainBody.active, true, 'active:true 幂等只加，不会切换成取消');
+assert.equal(favoriteMarkAgainBody.note, 'already');
+const favoriteBadActive = callRoute(host, '/api/compact-relay-action', {
+  method: 'POST',
+  body: JSON.stringify({ action: 'favorite-mark', sessionId: 'session-archived', seq: 3, active: 'yes' }),
+});
+await new Promise((resolve) => setTimeout(resolve, 40));
+assert.equal(favoriteBadActive.status, 400, 'active 类型错必须 400，不猜');
+
 // 2026-10-19 debug：动作端点必须带 sessionId（缺省/类型错绝不能退化成「最后一个 agent」）。
 const noSessionId = callRoute(host, '/api/compact-relay-action', {
   method: 'POST',

@@ -224,8 +224,9 @@ assert.deepEqual(
 );
 assert.equal(suggested.items.every((item) => typeof item.snippet === 'string' && item.snippet.length > 0), true);
 assert.deepEqual(preview.preview.pinHits, { inRange: 0, total: 0 }, '没有锁定消息时 pin 命中为 0');
-assert.equal(preview.message.includes('建议先 /pin 再压'), true, '预览文案给一句建议');
-assert.equal(preview.message.includes('只提示，不会自动锁定'), true, '明确只提示、不自动锁');
+assert.equal(preview.message.includes('建议先点星收藏'), true, '预览文案给一句收藏口径的建议（pin 已下线）');
+assert.equal(preview.message.includes('只提示，不会自动收藏'), true, '明确只提示、不自动收藏');
+assert.equal(preview.message.includes('/pin'), false, 'pin 已下线：预览文案不能再把用户指回 /pin');
 assert.equal(session.log.length, logBefore, '预览只读：不会自动写 pin（也不会写任何会话事件）');
 assert.equal(
   session.log.some((event) => event.type === PIN_RECORD_TYPE),
