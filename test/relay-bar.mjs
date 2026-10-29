@@ -962,32 +962,7 @@ async function mountIndicator(harness) {
   return { renderer, trigger };
 }
 
-test('指示灯：被原生压缩移除的 pin 标「已失效」，既不假装还在也不消失', async () => {
-  const harness = loadBundle();
-  harness.setState(
-    indicatorState({
-      pins: {
-        count: 1,
-        seqs: [5],
-        marks: [{ seq: 5, ratio: 0.5 }],
-        stale: { count: 2, seqs: [1, 2], native: 2, other: 0, unknown: 0 },
-        atRisk: null,
-      },
-    }),
-  );
-  const { renderer, trigger } = await mountIndicator(harness);
-  assert.equal(trigger.props['data-cr-pins'], '1', 'live 计数仍只算 surface 上还存在的 pin');
-  assert.equal(trigger.props['data-cr-pins-stale'], '2');
-
-  trigger.props.onMouseEnter({ currentTarget: rowElement });
-  await renderer.settle();
-  const stale = findByAttr(renderer.tree, 'data-cr-pin-stale');
-  assert.ok(stale !== null, '悬停卡要显示失效标注');
-  assert.ok(textOf(stale).includes('已失效 2 条'), textOf(stale));
-  assert.ok(textOf(stale).includes('随原生压缩移除'), textOf(stale));
-});
-
-test('指示灯：环只表达容量——有 pin 也不画位置块，计数/失效率仍在悬停卡与菜单', async () => {
+test('指示灯：锁定已下线——失效/风险 pin 不再出现在悬停卡与菜单（旧记录只读忽略）', async () => {
   const harness = loadBundle();
   harness.setState(
     indicatorState({
@@ -998,56 +973,35 @@ test('指示灯：环只表达容量——有 pin 也不画位置块，计数/�
           { seq: 4, ratio: 0.25 },
           { seq: 5, ratio: 0.75 },
         ],
-        stale: { count: 1, seqs: [1], native: 1, other: 0, unknown: 0 },
-        atRisk: null,
-      },
-    }),
-  );
-  const { renderer, trigger } = await mountIndicator(harness);
-  // 0.5.1 设计定稿：环只表达容量，pin 位置标记归 0.6 时间线——即使 state 里有 marks 也不画。
-  assert.equal(findByAttr(renderer.tree, 'data-cr-pin-mark'), null, '有 pin 也不应在环上画位置块');
-  assert.equal(trigger.props['data-cr-pins'], '2', '已锁定计数照旧');
-  assert.equal(trigger.props['data-cr-pins-stale'], '1', '失效率照旧');
-
-  trigger.props.onMouseEnter({ currentTarget: rowElement });
-  await renderer.settle();
-  const tooltip = findByAttr(renderer.tree, 'data-cr-tooltip');
-  assert.ok(tooltip !== null, '悬停卡应出现');
-  assert.ok(textOf(tooltip).includes('已锁定 2 条'), textOf(tooltip));
-  assert.ok(textOf(tooltip).includes('已失效 1 条'), textOf(tooltip));
-
-  trigger.props.onClick({ currentTarget: rowElement });
-  await renderer.settle();
-  const pinItem = findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'pin')[0];
-  assert.ok(pinItem !== undefined, '菜单要有锁定项');
-  assert.ok(textOf(pinItem).includes('已锁 2 条'), textOf(pinItem));
-  assert.ok(textOf(pinItem).includes('失效 1'), textOf(pinItem));
-});
-
-test('指示灯：原生压缩预计覆盖锁定消息时，悬停卡 + 主动提示都给出「先交接或解锁」', async () => {
-  const harness = loadBundle();
-  harness.setState(
-    indicatorState({
-      pins: {
-        count: 2,
-        seqs: [4, 5],
-        marks: [],
-        stale: { count: 0, seqs: [], native: 0, other: 0, unknown: 0 },
+        stale: { count: 2, seqs: [1, 2], native: 2, other: 0, unknown: 0 },
         atRisk: { count: 2, seqs: [4, 5] },
       },
     }),
   );
   const { renderer, trigger } = await mountIndicator(harness);
-  assert.equal(trigger.props['data-cr-pins-risk'], '2');
+  // 0.5.3：pin 退役为收藏——环上不画位置块（0.5.1 定稿），失效/风险标注也一并下线。
+  assert.equal(findByAttr(renderer.tree, 'data-cr-pin-mark'), null, '有 pin 也不应在环上画位置块');
+
   trigger.props.onMouseEnter({ currentTarget: rowElement });
   await renderer.settle();
+  const tooltip = findByAttr(renderer.tree, 'data-cr-tooltip');
+  assert.ok(tooltip !== null, '悬停卡应出现');
+  const text = textOf(tooltip);
+  for (const word of ['已锁定', '已失效', '锁定消息']) {
+    assert.equal(text.includes(word), false, `悬停卡不应再出现「${word}」：${text}`);
+  }
+  assert.equal(findByAttr(renderer.tree, 'data-cr-pin-stale'), null, '不再渲染失效标注');
+  assert.equal(findByAttr(renderer.tree, 'data-cr-pin-risk'), null, '不再渲染原生压缩覆盖预警');
 
-  const risk = findByAttr(renderer.tree, 'data-cr-pin-risk');
-  assert.ok(risk !== null, '悬停卡要有原生压缩覆盖预警');
-  assert.ok(textOf(risk).includes('原生压缩预计覆盖 2 条锁定消息'), textOf(risk));
-  // 主动提示（toast）：与悬停卡同一口径，建议先交接或解锁。
-  const toast = findAll(renderer.tree, (node) => typeof textOf(node) === 'string' && textOf(node).includes('建议先交接（/handoff）'))[0];
-  assert.ok(toast !== undefined, `应有主动提示：${textOf(renderer.tree).slice(-300)}`);
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  // 菜单不再有锁定项；也不再有「先交接或解锁」类提示。
+  assert.equal(findAll(renderer.tree, (node) => node.props?.['data-cr-item'] === 'pin').length, 0, '菜单不应再有锁定项');
+  assert.equal(
+    findAll(renderer.tree, (node) => typeof textOf(node) === 'string' && textOf(node).includes('建议先交接（/handoff）')).length,
+    0,
+    '不应再有让用户去解锁的提示',
+  );
 });
 
 test('交接预览：置顶会话必须明确选择「交接并归档（取消置顶）」或「只交接，保留置顶」', async () => {
