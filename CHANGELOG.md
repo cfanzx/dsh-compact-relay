@@ -20,6 +20,28 @@
 - **契约**：`contract-golden` 的 `noChain` 场景新增 4 行 `compactRange.merge.*`；
   帧体积增量 ≈ 80B（仅 `compactRange` 非空时）。
 
+> Phase D（任务 3）：**压缩归属**。存储并入统一事件流（不建第二份 JSONL）：归属 = `action:'compact'`
+> 事件行的投影。红线：任何代码路径都不把「`turn:null` 且无 `sourceCommandId`」翻成 `native-auto`。
+> D1（服务端一半）已落地；D2（客户端 + checkpoint 摘要头）见本批。**发版前统一整理本节措辞**。
+
+- **归属口径**：谁发起谁**提前 mint** `compactionId` 并登记 trigger（`ui-menu` / `command` / `handoff` /
+  `external` / `native-auto` / `unknown`）；旁路监听器只处理「不是我们发起的」压缩，按 DSH 写进事件的
+  硬证据分类：`turn` 是数字 → `native-auto`，有 `sourceCommandId` → `command`，都没有 → `unknown`。
+  actor：`native-auto → system`，其余 → `user`，`unknown → unknown`。三个客户端 POST（预览 / 交接预览 /
+  确认执行）显式带 `trigger:'ui-menu'`；环点击当前没有生产者，`ui-ring` 只保留枚举、不产生。
+- **读侧（D1）**：`readState.lastCompaction`（顶层 additive）与
+  `GET /api/compact-relay-attribution?limit=20&sessionId=` 从**同一份事件流**投影（形状冻结，
+  `core/attribution.ATTRIBUTION_ROW_KEYS`）；旧会话没有记录 → `null`，不猜。
+- **checkpoint 摘要头（D2）**：压缩时用**内存中的归属对象**拼一行
+  `〔压缩归属：菜单压缩·用户｜22 条｜32.5k tokens｜未合并旧摘要｜#a1b2c3d4〕` 追加进包帧——只写不解析，
+  旧 checkpoint 本来就没有这行。**摘要体积防护仍量「不带归属行」的同源包帧**，判定与 0.5.5 逐字节一致。
+- **完成反馈 + 三处可见性（D2）**：压缩完成文案末尾带「归属：菜单压缩（用户）」；指示灯悬停卡多一行
+  「上次压缩：菜单压缩·用户 · 22 条 / 32.5k · 15:40」；菜单「查看上次压缩」每条压缩一行归属。
+  历史里没有归属记录（0.5.6 之前的旧压缩、事件被轮转）显示「来源不明（无归属记录）」，
+  **不显示任何猜测的触发者**；`data-cr-last-compaction` / `data-cr-diff-attribution` 供真机取证。
+- **测试**：`test/attribution.mjs`（D1：分类判据/五种 trigger/提前 mint/投影/端点）+
+  `test/attribution-ui.mjs`（D2：文案映射/摘要头/shrink 防护口径/客户端产物静态守卫/组件级悬停卡与面板）。
+
 ## 0.5.5（2026-10-29，0.5.4 的 debug 版）
 
 > 修用户反馈：**收藏后星标「自动消失」**。只改客户端样式注入，收藏数据/后端/0.5.4 建议逻辑零改动。
