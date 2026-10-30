@@ -98,6 +98,9 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     'pinned',
     'pinnedKept',
     'attempts',
+    // 0.5.6 D1（压缩归属）：摘要模型 / 本次是否合并旧摘要（additive）。
+    'model',
+    'merged',
   ],
   cancel: ['kind', 'inflight'],
   'handoff-preview': [
