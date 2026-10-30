@@ -372,6 +372,8 @@ const FRAME_KEYS = [
   'favorites',
   // 0.5.6-C：只读 header 的「可能有父会话」提示（客户端据它决定是否走整链端点兜底）。
   'hasParent',
+  // 0.5.6-D1：最近一次压缩归属（事件流投影；无记录 → null）。
+  'lastCompaction',
   'level',
   'native',
   'next',
@@ -444,6 +446,7 @@ favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
 hasParent=null
+lastCompaction=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=null
@@ -522,6 +525,7 @@ favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
 hasParent=boolean
+lastCompaction=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -600,6 +604,7 @@ favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
 hasParent=boolean
+lastCompaction=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -697,6 +702,7 @@ favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
 hasParent=boolean
+lastCompaction=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -788,6 +794,7 @@ favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
 hasParent=boolean
+lastCompaction=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -866,6 +873,7 @@ favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
 hasParent=boolean
+lastCompaction=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number

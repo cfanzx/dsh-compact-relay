@@ -110,6 +110,7 @@ assert.deepEqual(
   host.routes.map((route) => route.path).sort(),
   [
     '/api/compact-relay-action',
+    '/api/compact-relay-attribution',
     '/api/compact-relay-chain',
     '/api/compact-relay-diagnostics',
     '/api/compact-relay-diff',
