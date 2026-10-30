@@ -95,6 +95,7 @@ Collected from building this plugin; they are the traps that fail silently:
 
 ## Debugging
 
+- **Runbook + read-only CLI**: `node scripts/dcr-debug.mjs --help`（也可在已安装的插件目录下跑）；`docs/debugging.md` 是给会话内 agent 的排查手册（事件流 / 失败投影 / state 快照 / export）。
 - **Isolated DSH boot with stderr**: copy `$DSH_HOME` (or just the profile) to a temp directory, run the desktop host entry with `ELECTRON_RUN_AS_NODE=1` and `DSH_HOME=<temp>`, and read the stderr — plugin activation failures and pending services are printed there. The printed GUI URL contains a token, so you can `curl` plugin endpoints.
 - **State endpoint**: `GET /api/compact-relay-state?sessionId=…` is the quickest way to see what the host thinks.
 - **Tests use isolated homes.** The e2e harness rsyncs the real DSH home into a temp dir; nothing in the tests may write to the real profile or sessions.
