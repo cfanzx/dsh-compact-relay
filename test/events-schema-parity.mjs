@@ -67,6 +67,8 @@ export const EXPECTED_ROW_KEYS = Object.freeze([
 /** context 白名单（Phase A 版；Phase D 加 compaction range 字段时改这里 + core/events）。 */
 const EXPECTED_CONTEXT_KEYS = Object.freeze({
   preview: [
+    'phase',
+    'surfaceNodes',
     'note',
     'nodes',
     'tokens',
@@ -81,6 +83,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     'pairingBalanced',
   ],
   compact: [
+    'phase',
+    'surfaceNodes',
     'note',
     'nodes',
     'tokens',
@@ -97,6 +101,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
   ],
   cancel: ['kind', 'inflight'],
   'handoff-preview': [
+    'phase',
+    'surfaceNodes',
     'note',
     'tokens',
     'ratio',
@@ -110,6 +116,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     'lastSurfaceType',
   ],
   handoff: [
+    'phase',
+    'surfaceNodes',
     'note',
     'tokens',
     'ratio',
@@ -123,8 +131,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     'lastSurfaceSeq',
     'lastSurfaceType',
   ],
-  'force-archive': ['archived', 'activity', 'status', 'hasChild'],
-  recover: ['archived', 'status'],
+  'force-archive': ['phase', 'surfaceNodes', 'archived', 'activity', 'status', 'hasChild'],
+  recover: ['phase', 'surfaceNodes', 'archived', 'status'],
   'favorite-toggle': [],
   'favorite-mark': [],
   'favorite-score-trial': [],
