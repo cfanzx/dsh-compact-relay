@@ -248,7 +248,8 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
     navigator: { clipboard: { writeText: async () => {} } },
     document: {
       body: {},
-      documentElement: {},
+      // 0.5.6-C：接力条诊断位写在 documentElement.dataset（真机取证用）；测试读回同一处。
+      documentElement: { dataset: {} },
       // 0.5.5：收藏星标「常亮」样式注入需要 head / getElementById / createElement，
       // 这里给一个极简替身，测试可读回注入的 CSS 文本（真实页面由浏览器执行同一段 CSS）。
       head: {
@@ -2211,7 +2212,193 @@ test('C4 正常会话零噪音：还剩 ≥2 次常规压缩 / 老宿主无 merg
 });
 
 /* ------------------------------------------------------------------ *
- * 9. 执行
+ * 9. 0.5.6-C：state 认不出/有父无链 → 整链端点兜底 + 诊断位
+ *
+ * 背景：state（readState）只认内存里的 agent/live session，宿主没加载的会话
+ * `sessionId:null`、`chain:null`；state 也没有「有父会话但没链」的兜底数据源。
+ * 0.5.6-C 加了两处兜底（复用 0.5.1 的 `/api/compact-relay-chain`，读磁盘、不要求 live）
+ * 和三个 documentElement 诊断位；这里锁住行为与「不额外读盘」的边界。
+ * ------------------------------------------------------------------ */
+
+/** 整链端点的合法响应（rows[0] = 直接父会话那一行）。 */
+const CHAIN_ROWS_RESPONSE = {
+  ok: true,
+  sessionId: SESSION_ID,
+  rows: [
+    {
+      sessionId: OLD_SESSION_ID,
+      ordinal: 1,
+      baseTitle: '原会话标题',
+      scheme: 'history-n',
+      path: CHAIN.path,
+    },
+  ],
+  done: true,
+  capped: false,
+  unreadable: null,
+};
+
+const chainFetchesOf = (harness) =>
+  harness.fetches.filter((entry) => String(entry.url).startsWith('/api/compact-relay-chain'));
+const stateFetchesOf = (harness) =>
+  harness.fetches.filter((entry) => String(entry.url).startsWith('/api/compact-relay-state'));
+
+/**
+ * 把「异步 fetch → setState → 重渲染」推到收敛（组件的重试/兜底是宏任务链，
+ * `settle()` 只在 dirty 时重渲染，所以主动多推几轮）。返回 predicate 最终是否为真。
+ */
+async function pumpUntil(renderer, predicate, ticks = 200) {
+  for (let tick = 0; tick < ticks; tick += 1) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await renderer.settle();
+  }
+  return predicate();
+}
+
+test('C5（0.5.6-C）state 认不出本会话（sessionId=null）→ 重试耗尽后整链端点兜底并渲染', async () => {
+  const harness = loadBundle();
+  // 把组件里的 500ms~3s 退避压成宏任务，12 次重试不必真等 ~28s。
+  harness.sandbox.setTimeout = (fn) => globalThis.setTimeout(fn, 0);
+  harness.setState({ ok: true, chain: null, sessionId: null, hasParent: null });
+  harness.setChainResponse(CHAIN_ROWS_RESPONSE);
+
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  const rendered = await pumpUntil(renderer, () => findByAttr(renderer.tree, 'data-cr-relay-bar') !== null);
+
+  assert.equal(rendered, true, '兜底拿到 rows[0] 后应渲染接力条');
+  const bar = findByAttr(renderer.tree, 'data-cr-relay-bar');
+  assert.ok(textOf(bar).includes('历史 1：原会话标题'), `兜底文案不对：${textOf(bar)}`);
+  assert.equal(bar.props['data-cr-relay-parent'], OLD_SESSION_ID, 'parentId 必须来自 rows[0].sessionId');
+  assert.equal(bar.props['data-cr-relay-path'], CHAIN.path, '交接单 path 来自 rows[0].path');
+  assert.equal(chainFetchesOf(harness).length, 1, '整链端点只应请求一次（12 次 state 重试后仍只读一次盘）');
+  assert.equal(
+    stateFetchesOf(harness).length,
+    13,
+    '兜底必须发生在 12 次重试全部耗尽之后（1 次首拉 + 12 次重试），不能在会话刚打开时就读盘',
+  );
+  // 诊断位：那 12 次重试期间 state 一直没收起会话，最终应停在 'null'。
+  const dataset = harness.sandbox.document.documentElement.dataset;
+  assert.equal(dataset.crRelayDock, '1', '组件挂载并跑过 effect');
+  assert.equal(dataset.crRelayChain, '1', '诊断位应写链号');
+  assert.equal(dataset.crRelayState, 'null', 'state 认不出会话时诊断位写 null');
+});
+
+test('C6（0.5.6-C）已加载但没链 + hasParent:true → 整链端点兜底渲染（不重试 state）', async () => {
+  const harness = loadBundle();
+  harness.setState({
+    ok: true,
+    chain: null,
+    next: null,
+    sessionId: SESSION_ID,
+    hasParent: true,
+    capabilities: { unarchive: true, forceArchive: true },
+  });
+  harness.setChainResponse(CHAIN_ROWS_RESPONSE);
+
+  const renderer = harness.mount(SESSION_ID);
+  renderer.renderOnce();
+  const rendered = await pumpUntil(renderer, () => findByAttr(renderer.tree, 'data-cr-relay-bar') !== null);
+
+  assert.equal(rendered, true, 'state 说「有父会话但没链」时应靠磁盘兜底出条');
+  const bar = findByAttr(renderer.tree, 'data-cr-relay-bar');
+  assert.ok(textOf(bar).includes('历史 1：原会话标题'));
+  assert.equal(chainFetchesOf(harness).length, 1, '兜底只读一次盘');
+  assert.equal(stateFetchesOf(harness).length, 1, 'state 已加载 → 不再重试');
+  const dataset = harness.sandbox.document.documentElement.dataset;
+  assert.equal(dataset.crRelayState, SESSION_ID);
+  assert.equal(dataset.crRelayChain, '1');
+});
+
+test('C7（0.5.6-C）hasParent:false / 老宿主没 hasParent → 不请求整链端点（零额外读盘）', async () => {
+  for (const state of [
+    { ok: true, chain: null, sessionId: SESSION_ID, hasParent: false },
+    // 老插件：没有 hasParent 字段 → 不知道，按「不兜底」处理（与 0.5.5 行为一致）。
+    { ok: true, chain: null, sessionId: SESSION_ID },
+  ]) {
+    const harness = loadBundle();
+    harness.setState(state);
+    harness.setChainResponse(CHAIN_ROWS_RESPONSE);
+    const renderer = harness.mount(SESSION_ID);
+    renderer.renderOnce();
+    await pumpUntil(renderer, () => chainFetchesOf(harness).length > 0, 20);
+    assert.equal(renderer.tree, null, `没有链就不渲染（state=${JSON.stringify(state)}）`);
+    assert.equal(chainFetchesOf(harness).length, 0, `不许为普通会话读整份日志：${JSON.stringify(state)}`);
+    assert.equal(stateFetchesOf(harness).length, 1, 'state 已加载 → 只请求一次');
+    const dataset = harness.sandbox.document.documentElement.dataset;
+    assert.equal(dataset.crRelayDock, '1', '没链也要证明组件挂载过（区分 B3/C）');
+    assert.equal(dataset.crRelayChain, 'none', '没链时诊断位写 none');
+  }
+});
+
+test('C8（0.5.6-C）老宿主/读不到（404 / ok:false / 空 rows）→ 不渲染、不抛错、不再重试', async () => {
+  const cases = [
+    { name: '老宿主没有端点', response: { status: 404, payload: { ok: false, message: 'not found' } } },
+    {
+      name: '宿主没有 sessionPersistence',
+      response: { ok: false, code: 'unsupported', message: '当前宿主没有 sessionPersistence，无法读取接力链' },
+    },
+    { name: '持久化里没有父会话', response: { ok: true, sessionId: SESSION_ID, rows: [], done: true, capped: false, unreadable: null } },
+  ];
+  for (const item of cases) {
+    const harness = loadBundle();
+    harness.setState({ ok: true, chain: null, sessionId: SESSION_ID, hasParent: true });
+    harness.setChainResponse(item.response);
+    const renderer = harness.mount(SESSION_ID);
+    renderer.renderOnce();
+    await pumpUntil(renderer, () => chainFetchesOf(harness).length > 0, 40);
+    // 让兜底响应落地并重渲染（失败路径不会 setState，settle 提前返回即可）。
+    for (let tick = 0; tick < 5; tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      await renderer.settle();
+    }
+    assert.equal(renderer.tree, null, `${item.name}：读不到就保持「不渲染」，不能编一条链`);
+    assert.equal(chainFetchesOf(harness).length, 1, `${item.name}：失败也只请求一次（不无限重试）`);
+    assert.equal(stateFetchesOf(harness).length, 1, `${item.name}：state 已加载，不应重试`);
+    assert.equal(harness.sandbox.document.documentElement.dataset.crRelayChain, 'none');
+  }
+});
+
+test('C9（0.5.6-C）指示灯 data-cr-chain 与接力条诊断位同口径', async () => {
+  // 有链：指示灯读同一帧 state 的 chain.ordinal。
+  const withChain = loadBundle();
+  withChain.setState(indicatorState({ chain: CHAIN }));
+  const indicator = withChain.mountLeft(SESSION_ID);
+  await indicator.settle();
+  const trigger = findByAttr(indicator.tree, 'data-cr-level');
+  assert.equal(trigger.props['data-cr-chain'], '1', '指示灯应透出服务端链号');
+  // 没链/老宿主：空串（不显示假的 0）。
+  const withoutChain = loadBundle();
+  withoutChain.setState(indicatorState({ chain: null }));
+  const bare = withoutChain.mountLeft(SESSION_ID);
+  await bare.settle();
+  assert.equal(findByAttr(bare.tree, 'data-cr-level').props['data-cr-chain'], '', '没有链时为空串');
+});
+
+test('C10（0.5.6-C 回归锁）接力条组件：提前 return 之后不得再调用 hook（React hooks 顺序）', () => {
+  const harness = loadBundle();
+  const entry = harness.registered['conversation.input.dock'];
+  assert.ok(entry !== undefined, '应注册 conversation.input.dock');
+  const source = String(entry.component);
+  const early = source.indexOf('if (chain === null && next === null) return null;');
+  assert.ok(early > 0, '应保留「两个方向都没有 → return null」的出口');
+  const hookPattern = /\buse(?:State|Ref|Effect|Callback|Memo|Reducer|LayoutEffect|Context)\s*\(/g;
+  let match;
+  let count = 0;
+  while ((match = hookPattern.exec(source)) !== null) {
+    count += 1;
+    assert.ok(
+      match.index < early,
+      `hook 调用出现在提前 return 之后（字符 ${match.index}）：React 会抛 "Rendered more hooks than during the previous render."，` +
+        '宿主会把接力条条目 abdicate 掉（0.5.2–0.5.5 的 Win 无条同形，见 0.5.6-C 修复说明）',
+    );
+  }
+  assert.ok(count > 20, `应扫到组件里的 hook 调用（实际 ${count} 处），防止守卫正则失效`);
+});
+
+/* ------------------------------------------------------------------ *
+ * 10. 执行
  * ------------------------------------------------------------------ */
 
 let passed = 0;

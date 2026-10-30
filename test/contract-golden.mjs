@@ -370,6 +370,8 @@ const FRAME_KEYS = [
   'compressHint',
   'favoriteSuggest',
   'favorites',
+  // 0.5.6-C：只读 header 的「可能有父会话」提示（客户端据它决定是否走整链端点兜底）。
+  'hasParent',
   'level',
   'native',
   'next',
@@ -441,6 +443,7 @@ favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
+hasParent=null
 level=string
 native.autoEnabled=boolean
 native.contextWindow=null
@@ -518,6 +521,7 @@ favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
+hasParent=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -595,6 +599,7 @@ favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
+hasParent=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -691,6 +696,7 @@ favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
+hasParent=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -781,6 +787,7 @@ favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
+hasParent=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -858,6 +865,7 @@ favorites.count=number
 favorites.messageIds[]=empty
 favorites.seqs[]=empty
 favorites.truncated=boolean
+hasParent=boolean
 level=string
 native.autoEnabled=boolean
 native.contextWindow=number
@@ -1162,6 +1170,18 @@ if (process.argv.includes('--print-golden')) {
     assert.equal(frames.noChain.chain, null);
     assert.equal(frames.noChain.relay, null);
     assert.equal(frames.empty.sessionId, null, '没有目标会话时 sessionId=null');
+
+    // 0.5.6-C：hasParent 是「会话头口径」的只读提示，不依赖日志/记录。
+    //   没有 target → null（不知道，客户端仍可尝试磁盘兜底）；
+    //   普通根会话 → false（客户端据此零额外请求）；
+    //   header.parentSession 的老链子会话 → true。
+    // 注：新链子会话在 contract-golden 的 fake host 里**没有**把 meta.parentSession
+    // 落进 MockSession.header（真实宿主会落，见 lib/dsh/sessions.js），所以这两帧只锁
+    // 类型（boolean），取值语义由 test/state-passive.mjs 的 4b 段单独锁。
+    assert.equal(frames.empty.hasParent, null, '没有目标会话 → hasParent=null（不知道，不是 false）');
+    assert.equal(frames.noChain.hasParent, false, '普通根会话 → hasParent=false');
+    assert.equal(frames.legacyChild.hasParent, true, '老链子会话（header.parentSession）→ hasParent=true');
+    assert.equal(frames.chainParent.hasParent, false, 'fake host 不落 meta.parentSession → 新链父会话这里为 false');
 
     // relay 的时间口径：at 是 epoch ms，atIso 是**本地** ISO（含时区偏移），不是 UTC。
     const relay = frames.chainChild.relay;

@@ -77,13 +77,20 @@ node scripts/dcr-debug.mjs show <失败 id>
 写盘（`message` 里带目录错误）、建会话（`childId` 是否有值）。`pairing-tail` = 会话尾部还有未完成的
 工具调用：等这一轮跑完，或在输入框发一条消息让它收尾，再预览/交接（0.5.6 起返回 409 而不是 500）。
 
-### C「接力条不显示」（0.5.6 Phase C 之前只做排查顺序）
+### C「接力条不显示」
+
+> 0.5.6-C 起，完整取证表达式 + 判读表（A1 / A2 / B3 / C 四种成因）见
+> **[relay-bar-debug.md](relay-bar-debug.md)**。下面是命令行侧的排查顺序。
 
 1. 数据在不在：`events --action handoff`；`handoff` 的 `childId` 是否有值；
-2. 投影对不对：`GET /api/compact-relay-chain?sessionId=…`；
-3. 渲染对不对：`state` 里的 `chain` / 客户端 `35-relay-bar.js` 的 `data-cr-chain` 诊断位。
+2. 投影对不对：`GET /api/compact-relay-chain?sessionId=…`（顺带看 `state` 的
+   `chain` / `hasParent` / `sessionId`）；
+3. 渲染对不对：浏览器 Console 一条表达式读
+   `document.documentElement.dataset.crRelay{Dock,Chain,State}` 与
+   `[data-cr-level]` 的 `data-cr-chain`；`crRelayDock` 缺失 = 组件没挂载或崩过被宿主下线。
 
-本阶段**不修**渲染，只提供证据（Phase C 的任务）。
+0.5.6-C 已给 A1（有父无链）/A2（宿主没加载会话）加磁盘兜底，并修掉 0.5.2–0.5.5 的
+hooks 顺序崩溃；真机仍要一次输出才能确认 Win 上命中的是哪一条。
 
 ### D「弹了个红 toast / 报错」
 

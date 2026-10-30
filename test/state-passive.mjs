@@ -140,6 +140,53 @@ function sessionWithMessages(id = 'session-passive') {
   assert.equal(state.compactRangeReason, null);
   assert.equal(state.relay, null, '没有会话 → 没有接力链记录');
   assert.equal(state.chain, null, '没有会话 → 没有链投影（0.5.0 F4）');
+  assert.equal(state.hasParent, null, '没有会话 → hasParent=null（不知道，不是 false）');
+}
+
+/* ------------------------------------------------------------------ *
+ * 4b. 0.5.6-C：hasParent —— 只读会话头的「可能有父会话」提示
+ *
+ * 客户端只在 hasParent===true（或 state 认不出会话）时才去读整链端点；
+ * 所以这个布尔的口径必须与 legacyChainParentIdOf 完全一致：
+ *   普通根会话 false / 交接子会话 true / subagent 与 fork false / 没有 target null。
+ * ------------------------------------------------------------------ */
+
+{
+  // 普通根会话（header 里没有 parentSession）→ false（客户端零额外请求）。
+  const root = sessionWithMessages('session-root');
+  const rootState = await readState(depsOf({ liveSession: root }), { sessionId: root.id });
+  assert.equal(rootState.hasParent, false, '普通根会话 → hasParent=false');
+  assert.equal(rootState.chain, null, '普通根会话仍然没有链');
+
+  // 交接出来的子会话（宿主 meta.parentSession → header.parentSession）→ true。
+  const child = sessionWithMessages('session-child');
+  child.header.parentSession = 'session-parent';
+  const childState = await readState(depsOf({ liveSession: child }), { sessionId: child.id });
+  assert.equal(childState.hasParent, true, '交接子会话 → hasParent=true');
+
+  // subagent 会话有 parentSession，但它不在人看的接力链上 → false。
+  const sub = sessionWithMessages('session-subagent');
+  sub.header.parentSession = 'session-parent';
+  sub.header.origin = 'subagent';
+  const subState = await readState(depsOf({ liveSession: sub }), { sessionId: sub.id });
+  assert.equal(subState.hasParent, false, 'subagent 不是交接链（口径同 legacyChainParentIdOf）');
+
+  // fork（isSeeded=true，继承前缀快照）也不是交接 → false。
+  const fork = sessionWithMessages('session-fork');
+  fork.header.parentSession = 'session-parent';
+  fork.header.isSeeded = true;
+  const forkState = await readState(depsOf({ liveSession: fork }), { sessionId: fork.id });
+  assert.equal(forkState.hasParent, false, 'fork 继承的是前缀快照，不算交接');
+
+  // 有活 agent 时 target 是 agent：同样用 agent.session 的 header，判定口径不变。
+  const agentChild = sessionWithMessages('agent-child');
+  agentChild.header.parentSession = 'session-parent';
+  const agentState = await readState(
+    depsOf({ liveSession: agentChild, agent: { id: 'agent-child', session: agentChild } }),
+    { sessionId: agentChild.id },
+  );
+  assert.equal(agentState.sessionId, 'agent-child');
+  assert.equal(agentState.hasParent, true, '活 agent 路径也用会话头判定');
 }
 
 /* ------------------------------------------------------------------ *
@@ -168,6 +215,8 @@ function sessionWithMessages(id = 'session-passive') {
     assert.equal(Object.hasOwn(state, key), true, `既有 state 字段 ${key} 不能丢`);
   }
   assert.equal(Object.hasOwn(state, 'compactRangeReason'), true, '新字段 compactRangeReason 必须存在');
+  assert.equal(Object.hasOwn(state, 'hasParent'), true, '0.5.6-C 新字段 hasParent 必须存在');
+  assert.equal(Object.hasOwn(state, 'chain'), true, '既有链字段 chain 不能丢');
 }
 
 /* ------------------------------------------------------------------ *
