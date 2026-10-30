@@ -579,6 +579,22 @@ test('0.4.2 服务端路由：带 nativeRatio 保存 62% 通过；不带 nativeR
   assert.equal(legacy.payload.config.thresholds.handoffRatio, 0.65);
 });
 
+test('0.5.6-B 设置页：摘要份数上限写清「从会话开头 / 全部旧摘要 / 之后每次」，输入框 min=1', async () => {
+  const { renderer } = await mountSettings({});
+  const group = findAll(renderer.tree, (node) => node.props?.['data-cr-group'] === '压缩行为')[0];
+  assert.ok(group !== undefined, '设置页应有「压缩行为」分组');
+  const groupText = textOf(group);
+  for (const token of ['从会话开头', '全部旧摘要', '之后每次']) {
+    assert.ok(groupText.includes(token), `设置页说明必须包含「${token}」：${groupText}`);
+  }
+  assert.equal(groupText.includes('下一次'), false, '文案一律「之后每次」，不许写「下一次」');
+  assert.equal(groupText.includes('不可逆'), true, '要说明合并后不可逆');
+
+  const input = findAll(renderer.tree, (node) => node.props?.['aria-label'] === '摘要份数上限')[0];
+  assert.ok(input !== undefined, '应有「摘要份数上限」输入框');
+  assert.equal(input.props.min, 1, '输入框 min 必须与配置 schema 的「≥1」一致（0 会被服务端拒绝）');
+});
+
 /* 运行全部用例（异步用例逐个 await；失败即退出非 0）。 */
 for (const [name, fn] of cases) {
   try {

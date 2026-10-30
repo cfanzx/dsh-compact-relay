@@ -2072,6 +2072,145 @@ test('收藏星标常亮（0.5.5）：已收藏消息的星标 aria-pressed=true
 });
 
 /* ------------------------------------------------------------------ *
+ * 8d. 0.5.6-B 泄压阀可见化（C1–C4）
+ *   悬停卡/菜单头/压缩项 note 三处同一句「再压一次就到上限…之后每次…」或
+ *   「本次压缩就会…」；确认卡只在本次真的合并时出现 [data-cr-merge-warning]。
+ *   红线：正常态（还剩 ≥2 次常规压缩 / 老宿主无 merge 字段）零噪音。
+ * ------------------------------------------------------------------ */
+
+const mergeOf = (overrides = {}) => ({ merges: false, normalLeft: 3, summaries: 3, maxSummaries: 6, ...overrides });
+
+const compactItemOf = (tree) => findAll(tree, (node) => node.props?.['data-cr-item'] === 'compact')[0] ?? null;
+/** 压缩项说明在 item 的最后一个孩子（非 oneLine 行：label + note）。 */
+const itemNoteText = (item) => (item === null ? '' : textOf(item.children[item.children.length - 1]));
+
+async function openIndicatorMenu(harness, state) {
+  harness.setState(indicatorState(state));
+  const { renderer, trigger } = await mountIndicator(harness);
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  return { renderer, trigger };
+}
+
+test('C1 泄压阀 max−1：悬停卡/菜单头「再压一次就到上限…之后每次」，压缩项标「最后 1 次常规压缩」', async () => {
+  const harness = loadBundle();
+  harness.setState(indicatorState({ compactRange: { nodes: 5, tokens: 1200, merge: mergeOf({ normalLeft: 1, summaries: 5 }) } }));
+  const { renderer, trigger } = await mountIndicator(harness);
+
+  trigger.props.onMouseEnter({ currentTarget: rowElement });
+  await renderer.settle();
+  const tooltipText = textOf(findByAttr(renderer.tree, 'data-cr-tooltip'));
+  assert.ok(tooltipText.includes('再压一次就到上限'), `悬停卡要提示「再压一次就到上限」：${tooltipText}`);
+  assert.ok(tooltipText.includes('全量合并'), `悬停卡要明说全量合并旧摘要：${tooltipText}`);
+  assert.ok(tooltipText.includes('之后每次'), '文案必须是「之后每次」而不是「下一次」');
+  assert.equal(tooltipText.includes('下一次'), false, '文案不许出现「下一次」（阀是单向棘轮）');
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const menuHint = findByAttr(renderer.tree, 'data-cr-merge-hint');
+  assert.ok(menuHint !== null, '菜单头应出现泄压阀提示（data-cr-merge-hint）');
+  const menuHintText = textOf(menuHint);
+  assert.ok(menuHintText.includes('再压一次就到上限'));
+  assert.ok(menuHintText.includes('之后每次'));
+  assert.equal(
+    itemNoteText(compactItemOf(renderer.tree)).startsWith('最后 1 次常规压缩'),
+    true,
+    `压缩项 note 要事先说明这是最后一次常规压缩：${itemNoteText(compactItemOf(renderer.tree))}`,
+  );
+});
+
+test('C2 已到上限：悬停卡/菜单头「本次压缩就会…」，压缩项标「⚠ 全量合并」', async () => {
+  const harness = loadBundle();
+  harness.setState(
+    indicatorState({ compactRange: { nodes: 18, tokens: 1800, merge: mergeOf({ merges: true, normalLeft: 0, summaries: 6 }) } }),
+  );
+  const { renderer, trigger } = await mountIndicator(harness);
+
+  trigger.props.onMouseEnter({ currentTarget: rowElement });
+  await renderer.settle();
+  const tooltipText = textOf(findByAttr(renderer.tree, 'data-cr-tooltip'));
+  assert.ok(tooltipText.includes('本次压缩就会'), `已到上限要说「本次」：${tooltipText}`);
+  assert.ok(tooltipText.includes('合并全部旧摘要'));
+  assert.equal(tooltipText.includes('下一次'), false);
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  const menuHintText = textOf(findByAttr(renderer.tree, 'data-cr-merge-hint'));
+  assert.ok(menuHintText.includes('本次压缩就会'));
+  assert.equal(
+    itemNoteText(compactItemOf(renderer.tree)).startsWith('⚠ 全量合并'),
+    true,
+    `合并时压缩项要有醒目前缀：${itemNoteText(compactItemOf(renderer.tree))}`,
+  );
+});
+
+test('C3 确认卡警示块：只有本次真的合并才出现（data-cr-merge-warning）；老宿主无字段不显示且可确认', async () => {
+  const basePreview = { nodes: 18, tokens: 1800, startSeq: 3, endSeq: 30, planId: 'p1', tooSmall: false };
+
+  // ① 本次合并 → 醒目警示块（语义：范围变大 + 不可逆 + 先交接）。
+  const mergedHarness = loadBundle();
+  mergedHarness.setCompactPreviewResponse({
+    ok: true,
+    planId: 'p1',
+    preview: { ...basePreview, merge: mergeOf({ merges: true, normalLeft: 0, summaries: 6 }) },
+  });
+  const mergedRenderer = await openCompactPreview(mergedHarness);
+  const warning = findByAttr(mergedRenderer.tree, 'data-cr-merge-warning');
+  assert.ok(warning !== null, '合并压缩时确认卡应有 [data-cr-merge-warning]');
+  const warningText = textOf(warning);
+  for (const token of ['从会话开头', '6/6', '交接']) {
+    assert.ok(warningText.includes(token), `警示块必须包含「${token}」：${warningText}`);
+  }
+  assert.equal(findByAttr(mergedRenderer.tree, 'data-cr-confirm-run').props.disabled, false, '警示块不改变确认按钮可用性');
+
+  // ② 本次不合并（还剩 2 次常规）→ 不出现警示块。
+  const regularHarness = loadBundle();
+  regularHarness.setCompactPreviewResponse({
+    ok: true,
+    planId: 'p1',
+    preview: { ...basePreview, merge: mergeOf({ normalLeft: 2, summaries: 4 }) },
+  });
+  const regularRenderer = await openCompactPreview(regularHarness);
+  assert.equal(findByAttr(regularRenderer.tree, 'data-cr-merge-warning'), null, '常规压缩不能出现警示块');
+
+  // ③ 老宿主（没有 merge 字段）→ 不出现、不报错，确认照常可点。
+  const legacyHarness = loadBundle();
+  legacyHarness.setCompactPreviewResponse({ ok: true, planId: 'p1', preview: { ...basePreview } });
+  const legacyRenderer = await openCompactPreview(legacyHarness);
+  assert.equal(findByAttr(legacyRenderer.tree, 'data-cr-merge-warning'), null, '老宿主没有 merge 字段时整块不渲染');
+  const legacyRun = findByAttr(legacyRenderer.tree, 'data-cr-confirm-run');
+  assert.notEqual(legacyRun.props.disabled, true, '老宿主确认按钮不能被新字段禁用');
+  legacyRun.props.onClick();
+  await legacyRenderer.settle();
+  assert.ok(
+    legacyHarness.actionCalls.some((call) => call.action === 'compact'),
+    '老宿主点确认仍应照常发压缩请求（向后兼容）',
+  );
+});
+
+test('C4 正常会话零噪音：还剩 ≥2 次常规压缩 / 老宿主无 merge → 不出现任何合并提示', async () => {
+  // ① normalLeft >= 2（正常态）。
+  const harness = loadBundle();
+  harness.setState(indicatorState({ compactRange: { nodes: 5, tokens: 1200, merge: mergeOf({ normalLeft: 2, summaries: 4 }) } }));
+  const { renderer, trigger } = await mountIndicator(harness);
+  trigger.props.onMouseEnter({ currentTarget: rowElement });
+  await renderer.settle();
+  const tooltipText = textOf(findByAttr(renderer.tree, 'data-cr-tooltip'));
+  assert.equal(tooltipText.includes('合并'), false, `正常态悬停卡不能提合并：${tooltipText}`);
+
+  trigger.props.onClick({ currentTarget: rowElement });
+  await renderer.settle();
+  assert.equal(findByAttr(renderer.tree, 'data-cr-merge-hint'), null, '正常态菜单头不出现泄压阀提示');
+  assert.equal(itemNoteText(compactItemOf(renderer.tree)).includes('合并'), false, '正常态压缩项 note 不出现合并字样');
+
+  // ② 老宿主（compactRange 无 merge 字段）→ 同样零噪音、不渲染空节点。
+  const legacyHarness = loadBundle();
+  const legacy = await openIndicatorMenu(legacyHarness, { compactRange: { nodes: 5, tokens: 1200 } });
+  assert.equal(findByAttr(legacy.renderer.tree, 'data-cr-merge-hint'), null, '老宿主没有 merge 字段时菜单不出现提示');
+  assert.equal(itemNoteText(compactItemOf(legacy.renderer.tree)).includes('合并'), false);
+});
+
+/* ------------------------------------------------------------------ *
  * 9. 执行
  * ------------------------------------------------------------------ */
 
