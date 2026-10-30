@@ -1,46 +1,75 @@
 # Changelog
 
-## 0.5.6（开发中）
+## 0.5.6（2026-10-30，0.5.5 的功能版）
 
-> Phase B（任务 1）：**泄压阀可见化**。只加语义，不改压缩判定/选段/配置项；
-> 新增 `test/release-valve.mjs`（T1–T6）、`relay-bar` C1–C4、设置页 C5。
+> 四条线一起进：**能查案**（动作事件流 + 失败留档 + 只读 debug CLI）、**看得见**（泄压阀、
+> 压缩归属）、**稳得住**（接力条磁盘兜底）。测试 **398 → 488 PASS**（新增 90 条）。
+> 只调用 DSH 公开导出接口；`lib/core/ledger.js` 与 `compact-relay-ledger.jsonl` 格式零改动。
 
-- **`core/policy.mergeValveOf`**：把「摘要份数 ≥ 上限 → 合并旧摘要」的泄压阀状态做成
-  纯函数（`merges` / `normalLeft` / `summaries` / `maxSummaries`），`compactionPolicy`
-  复用同一份判定。`maxSummaries=0`（不限）永远不合并；份数是历史提交次数口径，
-  阀一旦打开就是单向棘轮。
-- **服务端下发**：`preview.merge` 与 `state.compactRange.merge`（additive；老客户端忽略）
-  同一口径；预览 `message` 在合并时句首先说「本次是合并压缩（已达到摘要上限 M/M）：从
-  会话开头连同全部旧摘要一起压。」；压缩完成文案把「从会话开头合并」升进主句。
-- **客户端**：悬停卡/菜单头/压缩项 note 三处在「最后 1 次常规压缩」与「已到上限」两档
-  出现提示（一律「之后每次」，不说「下一次」）；确认卡新增醒目警示块
-  `[data-cr-merge-warning]`（从会话开头 + 分数 + 想去交接的出口），不加强制二次确认。
-- **设置页**：「摘要份数上限」说明改写为「从会话开头 / 全部旧摘要 / 之后每次 / 不可逆」；
-  输入框 `min: 0 → 1`，与配置 schema 的正整数校验一致。
-- **契约**：`contract-golden` 的 `noChain` 场景新增 4 行 `compactRange.merge.*`；
-  帧体积增量 ≈ 80B（仅 `compactRange` 非空时）。
+### 动作事件流与失败留档
 
-> Phase D（任务 3）：**压缩归属**。存储并入统一事件流（不建第二份 JSONL）：归属 = `action:'compact'`
-> 事件行的投影。红线：任何代码路径都不把「`turn:null` 且无 `sourceCommandId`」翻成 `native-auto`。
-> D1（服务端一半）已落地；D2（客户端 + checkpoint 摘要头）见本批。**发版前统一整理本节措辞**。
+- **统一事件文件** `$DSH_HOME/compact-relay-events.jsonl`（`dcr-event/v1`）：一个动作两行
+  （`phase:start` → `phase:end`，共享 `id`），JSONL 追加、800 行上限并**保底 200 条失败**；
+  写盘永不抛，坏行读时跳过。失败 = `outcome:'fail'` 行的**读侧投影**，不另建第二份文件。
+- **500 不再丢 code**：所有 action 端点 4xx/5xx 走统一出口，body 恒带 `code` + `message`，
+  真落了记录时再加 `failureId` + 脱敏 `failure`；`preview` 在会话回复中走 `runIdle`
+  （busy → 409），交接单生成前加工具配对闸（`pairing-tail` 409），不再拿半截历史去打模型。
+- **toast「复制诊断」**：失败提示带一键复制（失败 id、错误码、动作、trigger、耗时等），
+  直接贴 issue；脱敏两档（落盘保留路径、导出全脱敏）。
+- **`dcr-debug` 只读 CLI**（`node scripts/dcr-debug.mjs`，随包发布）：`events` / `failures` /
+  `show` / `state` / `logs` / `export`；读 `$DSH_HOME` 或本机回环只读 GET，不写文件、不触发动作。
+  命令级说明见 `docs/debugging.md`。诊断端点 `/api/compact-relay-diagnostics` 末尾新增
+  additive `events` 块（`recentFailures` ≤10、`recentActions` ≤20），不改变 `dcr-diagnostics/v1`。
 
-- **归属口径**：谁发起谁**提前 mint** `compactionId` 并登记 trigger（`ui-menu` / `command` / `handoff` /
-  `external` / `native-auto` / `unknown`）；旁路监听器只处理「不是我们发起的」压缩，按 DSH 写进事件的
-  硬证据分类：`turn` 是数字 → `native-auto`，有 `sourceCommandId` → `command`，都没有 → `unknown`。
-  actor：`native-auto → system`，其余 → `user`，`unknown → unknown`。三个客户端 POST（预览 / 交接预览 /
-  确认执行）显式带 `trigger:'ui-menu'`；环点击当前没有生产者，`ui-ring` 只保留枚举、不产生。
-- **读侧（D1）**：`readState.lastCompaction`（顶层 additive）与
-  `GET /api/compact-relay-attribution?limit=20&sessionId=` 从**同一份事件流**投影（形状冻结，
-  `core/attribution.ATTRIBUTION_ROW_KEYS`）；旧会话没有记录 → `null`，不猜。
-- **checkpoint 摘要头（D2）**：压缩时用**内存中的归属对象**拼一行
-  `〔压缩归属：菜单压缩·用户｜22 条｜32.5k tokens｜未合并旧摘要｜#a1b2c3d4〕` 追加进包帧——只写不解析，
-  旧 checkpoint 本来就没有这行。**摘要体积防护仍量「不带归属行」的同源包帧**，判定与 0.5.5 逐字节一致。
-- **完成反馈 + 三处可见性（D2）**：压缩完成文案末尾带「归属：菜单压缩（用户）」；指示灯悬停卡多一行
-  「上次压缩：菜单压缩·用户 · 22 条 / 32.5k · 15:40」；菜单「查看上次压缩」每条压缩一行归属。
-  历史里没有归属记录（0.5.6 之前的旧压缩、事件被轮转）显示「来源不明（无归属记录）」，
-  **不显示任何猜测的触发者**；`data-cr-last-compaction` / `data-cr-diff-attribution` 供真机取证。
-- **测试**：`test/attribution.mjs`（D1：分类判据/五种 trigger/提前 mint/投影/端点）+
-  `test/attribution-ui.mjs`（D2：文案映射/摘要头/shrink 防护口径/客户端产物静态守卫/组件级悬停卡与面板）。
+### 泄压阀可见化
+
+- **`core/policy.mergeValveOf`**：把「摘要份数 ≥ 上限 → 合并旧摘要」做成纯函数
+  （`merges` / `normalLeft` / `summaries` / `maxSummaries`），`compactionPolicy` 复用同一份判定。
+  `maxSummaries=0`（不限）永远不合并；份数是历史提交次数口径，阀一旦打开就是单向棘轮。
+- **服务端下发**：`preview.merge` 与 `state.compactRange.merge`（additive）；预览 `message`
+  在合并时句首先说「本次是合并压缩（已达到摘要上限 M/M）：从会话开头连同全部旧摘要一起压。」；
+  完成文案把「从会话开头合并」升进主句。
+- **客户端**：悬停卡 / 菜单头 / 压缩项 note 三处在「最后 1 次常规压缩」与「已到上限」两档
+  提示（一律「之后每次」，不说「下一次」）；确认卡新增警示块 `[data-cr-merge-warning]`，
+  不加强制二次确认。
+- **设置页**：说明改为「从会话开头 / 全部旧摘要 / 之后每次 / 不可逆」；输入框 `min: 0 → 1`。
+- **契约**：`compactRange.merge.*` 4 行进 golden（仅 `noChain` 场景），帧 +≈80B。
+
+### 接力条兜底与真机诊断
+
+- **`state.hasParent`**（只读 header、零 IO；无 target → `null`）告诉客户端「本会话可能有父会话」。
+- **磁盘兜底**：宿主没加载会话（state 认不出）或「有父会话但没链」时，用已有
+  `/api/compact-relay-chain` 只读一次持久化日志补链；普通根会话（`hasParent:false`）
+  **零额外请求**；每会话最多一次，失败静默。
+- **诊断位**：`<html>` 上 `data-cr-relay-dock` / `data-cr-relay-chain` / `data-cr-relay-state`，
+  指示灯 `data-cr-chain`；一条 console 表达式可判 A2（未加载）/ B3（dock 未挂载）/
+  C（组件崩过被 abdicate）。取证步骤见 `docs/relay-bar-debug.md`。
+
+### 压缩归属
+
+- **归属口径**：谁发起谁**提前 mint** `compactionId` 并登记 trigger（`ui-menu` / `command` /
+  `handoff` / `external` / `native-auto` / `unknown`）；旁路监听器只处理不是我们发起的压缩，
+  按 DSH 写进事件的硬证据分类：`turn` 是数字 → `native-auto`，有 `sourceCommandId` → `command`，
+  都没有 → `unknown`。actor：`native-auto → system`，其余 → `user`，`unknown → unknown`。
+  **红线：任何路径都不把「`turn:null` 且无 `sourceCommandId`」翻成 `native-auto`。**
+- **读侧**：`readState.lastCompaction`（顶层 additive）与
+  `GET /api/compact-relay-attribution?limit=20&sessionId=` 从同一事件流投影；旧会话无记录 → `null`。
+- **checkpoint 摘要头**：压缩时用内存里的归属对象拼一行
+  `〔压缩归属：菜单压缩·用户｜22 条｜32.5k tokens｜未合并旧摘要｜#a1b2c3d4〕` 追加进包帧——
+  只写不解析；旧 checkpoint 本来没有这行；**摘要体积防护仍量「不带归属行」的同源包帧**，
+  判定与 0.5.5 逐字节一致。
+- **可见性**：完成文案末尾「归属：菜单压缩（用户）」；悬停卡「上次压缩：…」；菜单
+  「查看上次压缩」每条一行。历史无记录显示「来源不明（无归属记录）」，不显示任何猜测。
+  `data-cr-last-compaction` / `data-cr-diff-attribution` 供真机取证。
+
+### 契约与测试
+
+- 新增测试：`events-unit` / `events-schema-parity` / `failure-ledger` / `events-cli` /
+  `release-valve` / `attribution` / `attribution-ui`，并扩展 `relay-bar`、`settings-ux`、
+  `state-passive`、`contract-golden`、`plugin-load`；`npm test` **488 PASS / 0 FAIL**。
+- 冻结契约同批更新：`lastCompaction` + `hasParent` + `compactRange.merge` 进 golden，
+  路由表新增 `/api/compact-relay-attribution`；`lib/core/ledger.js`、`compact-relay-ledger.jsonl`
+  与 `dcr-diagnostics/v1` 均未改动。
 
 ## 0.5.5（2026-10-29，0.5.4 的 debug 版）
 
