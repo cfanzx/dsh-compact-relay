@@ -78,7 +78,7 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 | 文件 | 导出 | 职责 |
 |---|---|---|
 | `core/config-schema.js` | `CONFIG_FIELDS`, `resolveConfig` 辅助 | **配置项唯一清单**：默认值/校验/中文文案/设置页白名单/公开视图 |
-| `core/policy.js` | `adviceFor`, `ratioOf`, `ringLevel`, `compactionPolicy` | 阈值判定：`none / compact / handoff`；外环/内圆四状态优先级；旧摘要合并策略 |
+| `core/policy.js` | `adviceFor`, `ratioOf`, `ringLevel`, `compactionPolicy`, `mergeValveOf` | 阈值判定：`none / compact / handoff`；外环/内圆四状态优先级；旧摘要合并策略（`mergeValveOf` = 0.5.6-B 泄压阀状态：`merges/normalLeft`，判据是压缩开始时的份数，单向棘轮） |
 | `core/ranges.js` | `selectFullRange`, `selectTestRange` | 选段：跳过旧摘要、留活跃尾部、配对平衡；M1 实验版（最近 N 条） |
 | `core/prompts.js` | `SUMMARY_INSTRUCTION`, `TEST_INSTRUCTION`, `HANDOFF_INSTRUCTION` 等 | **所有提示词唯一来源** |
 | `core/handoff-spec.js` | `HANDOFF_SPEC`, `HANDOFF_SECTIONS` | **九段规格表**：提示词/校验/渲染/客户端文案全部由它派生 |
@@ -178,6 +178,9 @@ core 里不许出现 `ctx` / `agent` / `session`；dsh 里不许出现 UI 文案
 readState(deps, {sessionId}) -> {
   sessionId, pressure, window, ratio,
   summaries, advice,               // 'none' | 'compact' | 'handoff'
+  compactRange,                    // null | {nodes, tokens, startSeq, endSeq,
+                                   //   merge: {merges, normalLeft, summaries, maxSummaries}}
+                                   //   0.5.6-B：泄压阀状态（只加不改）；与 preview.merge 同口径
   compressHint, busy,              // compressHint: null | {ratio, at, seq}（模型判断点）
   native,                          // DSH 原生自动压缩：{autoEnabled, thresholdRatio}
   relay, chain, next,              // 接力链：relay = 最近一条 record 原样（出站/入站都可能）
@@ -208,6 +211,14 @@ readState(deps, {sessionId}) -> {
 betterCompact(deps, {agent, signal, commandId}) -> {
   ok, startSeq, endSeq, shadowedSeqs, shadowedTokens,
   summarySeq, summaryTokens, message,
+}
+
+// 0.5.6-B：预览响应只加一个 additive 字段 merge；既有 nodes/tokens/... 不动。
+previewBetterCompact(deps, {agent, trigger}) -> {
+  ok, compacted: false, planId, message,
+  preview: {nodes, tokens, startSeq, endSeq, planId, tooSmall,
+            pinSuggest, pinHits, favoriteHits, favoritePreview,
+            merge: {merges, normalLeft, summaries, maxSummaries}},
 }
 
 // actions/test-compact.js
@@ -320,7 +331,8 @@ DSH 原生自动压缩线刻度（`nativeTickAt`）、越过原生线整环闪�
 
 **帧体积口径**（0.5.1 定稿，实测：中段会话 + 200K 窗口 + 4 节点，`JSON.stringify(readState)`）：
 整帧 ≈ 2.1KB，其中 `chain` ≈ 215B、`next` ≈ 215B、`nextArchived`/`parentArchived` 各 4–5B、
-`pins` ≈ 110B（`stale` 为空时 ≈ 54B，`atRisk` 为 null）、`capabilities` ≈ 40B（0.5.2 增 `forceArchive`）、`sessionPinned` 4–5B。
+`pins` ≈ 110B（`stale` 为空时 ≈ 54B，`atRisk` 为 null）、`capabilities` ≈ 40B（0.5.2 增 `forceArchive`）、`sessionPinned` 4–5B；
+`compactRange` 只在有可压范围时下发，0.5.6-B 的 `merge` 四个标量 ≈ 80B。
 0.5.1 相对 0.5.0 的 additive 增量 ≈ 300B/帧（`next` + `nextArchived` + `pins.stale/atRisk` +
 `sessionPinned` + `capabilities`），与 0.5.0 的 `chain`（215B）同一量级；**没有**把标题正文、
 日志、交接单内容搬进帧里（`test/state-passive.mjs` 锁 `chain` < 512B）。

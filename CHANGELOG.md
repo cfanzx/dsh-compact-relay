@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.6（开发中）
+
+> Phase B（任务 1）：**泄压阀可见化**。只加语义，不改压缩判定/选段/配置项；
+> 新增 `test/release-valve.mjs`（T1–T6）、`relay-bar` C1–C4、设置页 C5。
+
+- **`core/policy.mergeValveOf`**：把「摘要份数 ≥ 上限 → 合并旧摘要」的泄压阀状态做成
+  纯函数（`merges` / `normalLeft` / `summaries` / `maxSummaries`），`compactionPolicy`
+  复用同一份判定。`maxSummaries=0`（不限）永远不合并；份数是历史提交次数口径，
+  阀一旦打开就是单向棘轮。
+- **服务端下发**：`preview.merge` 与 `state.compactRange.merge`（additive；老客户端忽略）
+  同一口径；预览 `message` 在合并时句首先说「本次是合并压缩（已达到摘要上限 M/M）：从
+  会话开头连同全部旧摘要一起压。」；压缩完成文案把「从会话开头合并」升进主句。
+- **客户端**：悬停卡/菜单头/压缩项 note 三处在「最后 1 次常规压缩」与「已到上限」两档
+  出现提示（一律「之后每次」，不说「下一次」）；确认卡新增醒目警示块
+  `[data-cr-merge-warning]`（从会话开头 + 分数 + 想去交接的出口），不加强制二次确认。
+- **设置页**：「摘要份数上限」说明改写为「从会话开头 / 全部旧摘要 / 之后每次 / 不可逆」；
+  输入框 `min: 0 → 1`，与配置 schema 的正整数校验一致。
+- **契约**：`contract-golden` 的 `noChain` 场景新增 4 行 `compactRange.merge.*`；
+  帧体积增量 ≈ 80B（仅 `compactRange` 非空时）。
+
 ## 0.5.5（2026-10-29，0.5.4 的 debug 版）
 
 > 修用户反馈：**收藏后星标「自动消失」**。只改客户端样式注入，收藏数据/后端/0.5.4 建议逻辑零改动。
