@@ -916,10 +916,14 @@ async function clickAria(driver, label, { prefix = false } = {}) {
 
 /** 等「在“X”中新建会话」按钮出现；必要时先点选择工作区菜单把工作区切过去。 */
 async function ensureWorkspaceReady(driver, workspaceTitle) {
+  // 2026-10-30（DSH RC5）：每个工作区的「在“X”中新建会话」按钮仍留在 DOM 里，但尺寸是
+  // 0×0、不可见，点它没有任何反应。必须只认「可见」按钮，否则会静默点空（smoke 曾因此
+  // 卡在「等待新会话创建响应超时」）。
   const perWorkspaceExpr = (title) => `(() => {
     const title = ${JSON.stringify(title)};
+    const vis = (button) => { const rect = button.getBoundingClientRect(); return rect.width > 0 && rect.height > 0; };
     return [...document.querySelectorAll('button,[role=button]')].some((button) =>
-      (button.getAttribute('aria-label') ?? '') === '在“' + title + '”中新建会话');
+      vis(button) && (button.getAttribute('aria-label') ?? '') === '在“' + title + '”中新建会话');
   })()`;
 
   if (await driver.eval(perWorkspaceExpr(workspaceTitle))) return true;
@@ -951,7 +955,9 @@ async function ensureWorkspaceReady(driver, workspaceTitle) {
     `(() => {
       const buttons = [...document.querySelectorAll('button,[role=button]')];
       const ariaOf = (button) => button.getAttribute('aria-label') ?? '';
-      return buttons.some((button) => /^在“.+”中新建会话$/.test(ariaOf(button))) || buttons.some((button) => ariaOf(button) === '新建会话');
+      const vis = (button) => { const rect = button.getBoundingClientRect(); return rect.width > 0 && rect.height > 0; };
+      const visible = buttons.filter(vis);
+      return visible.some((button) => /^在“.+”中新建会话$/.test(ariaOf(button))) || visible.some((button) => ariaOf(button) === '新建会话');
     })()`,
     10_000,
   );
@@ -962,7 +968,16 @@ async function ensureWorkspaceReady(driver, workspaceTitle) {
   throw new Error(`在 GUI 里找不到「在“${workspaceTitle}”中新建会话」按钮，也没有其它可用的工作区`);
 }
 
-/** 抓「不带 sessionId 的 session/create」请求响应 —— 这就是「点新会话」创建出来的 live session。 */
+/**
+ * 抓「新建会话」的 session/create 请求响应。
+ *
+ * 2026-10-30（DSH RC5）：新建请求的 body 变成 `{workspaceId, sessionId}` —— sessionId 由
+ * **客户端预先 mint**，旧判别式「body 带 sessionId 就是恢复」会把真正的创建事件漏掉。
+ * 新判别式：**带 workspaceId 的 session/create = 新建**（打开已有会话的请求不带 workspaceId），
+ * 响应里再解析 sessionId。注意：RC5 点「新建会话」可能复用页面加载时已建好的空白会话，
+ * 返回的 sessionId **可能已经存在**（甚至就在 beforeIds 里），所以不能按「新 id」判定，
+ * 只认「点击后网络里出现的这条 create」。
+ */
 function waitForCreatedSession(cdp, timeoutMs) {
   return new Promise((resolve, reject) => {
     const requests = new Map();
@@ -977,8 +992,8 @@ function waitForCreatedSession(cdp, timeoutMs) {
       cdp.on('Network.requestWillBeSent', (params) => {
         if (!/\/api\/session\/create$/.test(params.request.url)) return;
         const body = params.request.postData ?? '';
-        // 带 sessionId 的是「恢复/打开已有会话」，不是「新建」。
-        if (body.includes('"sessionId"')) return;
+        // 新建会话一定带 workspaceId；不带的是打开/恢复已有会话。
+        if (!body.includes('"workspaceId"')) return;
         requests.set(params.requestId, { requestId: params.requestId, requestBody: body });
       }),
     );
@@ -1005,10 +1020,11 @@ function waitForCreatedSession(cdp, timeoutMs) {
  * 在 GUI 里点「新建会话」建一个空白 live session。
  *
  * 关键点（实测）：
- *   - 点击会触发 POST /api/session/create（request 里没有 sessionId），返回新 sessionId；
+ *   - 点击会触发 POST /api/session/create，返回新 sessionId（RC5 起 request body 里带
+ *     客户端预 mint 的 sessionId + workspaceId，判别式见 waitForCreatedSession）；
  *   - 创建出的是 blank session + live agent（session/list: blank:true, agentAvailable:true），
  *     不会跑模型、不花钱；
- *   - 页面加载时还会自动「恢复」上次会话，那是一个带 sessionId 的 create 请求，不能当成本次新建。
+ *   - 页面加载时还会自动「恢复」上次会话；用 beforeIds 排掉已存在的会话。
  *
  * @param {object} driver openGui() 的返回值
  * @param {{workspaceTitle?:string, timeoutMs?:number}} [options]
@@ -1029,14 +1045,21 @@ export async function newSession(driver, options = {}) {
     const title = ${JSON.stringify(workspaceTitle)};
     const buttons = [...document.querySelectorAll('button,[role=button]')];
     const ariaOf = (button) => button.getAttribute('aria-label') ?? '';
-    let button = buttons.find((candidate) => ariaOf(candidate) === '在“' + title + '”中新建会话');
+    // RC5：只点可见按钮（工作区级按钮可能是 0×0 占位）。
+    const vis = (button) => { const rect = button.getBoundingClientRect(); return rect.width > 0 && rect.height > 0; };
+    const visible = buttons.filter(vis);
+    let button = visible.find((candidate) => ariaOf(candidate) === '在“' + title + '”中新建会话');
     let mode = 'workspace';
     if (!button) {
-      button = buttons.find((candidate) => /^在“.+”中新建会话$/.test(ariaOf(candidate)));
+      button = visible.find((candidate) => /^在“.+”中新建会话$/.test(ariaOf(candidate)));
       mode = 'any-workspace';
     }
     if (!button) {
-      button = buttons.find((candidate) => ariaOf(candidate) === '新建会话');
+      button = visible.find((candidate) => ariaOf(candidate) === '新建会话' && (candidate.innerText ?? '').includes('新会话'));
+      mode = 'generic';
+    }
+    if (!button) {
+      button = visible.find((candidate) => ariaOf(candidate) === '新建会话');
       mode = 'generic';
     }
     if (!button) return { clicked: false };

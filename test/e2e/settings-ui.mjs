@@ -83,8 +83,11 @@ try {
   const purposeCount = (dialogText.match(/作用：/g) || []).length;
   const effectCount = (dialogText.match(/调整后：/g) || []).length;
   log('作用:/调整后: 行数 =', purposeCount, '/', effectCount);
-  // UI-002 后设置项：压缩提示 3 + 压缩行为 3 + 原生开关 1 + 颜色与外观 7（模式/自动适配/5 色）= 14。
-  if (purposeCount !== 14 || effectCount !== 14) throw new Error(`每个设置应有两行小字，实际 ${purposeCount}/${effectCount}`);
+  // 每个设置项都该有「作用/调整后」两行小字。数量随功能演进（0.5.3 收藏后 14 → 19），
+  // 别钉死具体条数：只要求两行成对、且不少于 14（历史上限）。
+  if (purposeCount !== effectCount || purposeCount < 14) {
+    throw new Error(`每个设置应有两行小字，实际 ${purposeCount}/${effectCount}`);
+  }
   for (const wanted of [
     '使用教程（GitHub）',
     '反馈 / 提 bug（GitHub Issues）',
