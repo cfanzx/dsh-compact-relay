@@ -1,11 +1,12 @@
 /**
- * 0.5.7 长动作异步化：job 表纯单测（12 条，不起 HTTP / 不碰真实 DSH）。
+ * 0.5.7 长动作异步化：job 表纯单测（15 条，不起 HTTP / 不碰真实 DSH）。
  *
  *   node test/jobs-unit.mjs
  *
- * 覆盖（架构 §1 / §7）：id 前缀与初态、同 key 复用、异 key busy、force 跳过复用、
- * settle TTL 与 sweep、上限淘汰、latest、cancel（running/已结束）、close（卸载）、
- * 失败映射 error、launch 异步（setImmediate）与成功 result。
+ * 覆盖（架构 §1 / §7）：id 前缀与初态、同 key 复用、异 key busy、force 同 key 先取消旧任务、
+ * force 异 key 仍 busy、settle TTL 与 sweep、上限淘汰、latest、cancel（running/已结束）、
+ * close（卸载）、失败映射 error、launch 异步（setImmediate）与成功 result、
+ * launch 后同 tick 取消/卸载不执行（M1）、never-settle 动作的 promise 结算（M3）。
  * 断言只依赖 lib/dsh/jobs.js 的公开契约，不读内部 Map。
  */
 import assert from 'node:assert/strict';
@@ -123,13 +124,49 @@ test('U3 同 session+kind 不同 key + running → busy（不排队、不复用�
   table.close();
 });
 
-test('U4 force 跳过复用（同 key 也起新任务）', () => {
+test('U4 force 同 key：先 abort 旧 job（置 cancelled）再起新 job，不复用', async () => {
   const { table } = makeTable();
-  const first = table.start({ kind: 'handoff-preview', sessionId: 's1', params: {}, run: async () => 1 });
+  const slow = makeRun();
+  const first = table.start({ kind: 'handoff-preview', sessionId: 's1', params: {}, run: slow.run });
+  table.launch(first.job.id);
+  await flush();
+  assert.equal(slow.calls.length, 1, '旧任务已经在跑');
   const forced = table.start({ kind: 'handoff-preview', sessionId: 's1', params: {}, force: true, run: async () => 2 });
-  assert.equal(forced.reused, false);
+  assert.equal(forced.reused, false, 'force 不复用旧 job');
   assert.notEqual(forced.job.id, first.job.id);
   assert.equal(table.list().length, 2);
+  const old = table.get(first.job.id);
+  assert.equal(old.status, 'cancelled', '旧 job 先被取消（force 不绕过并发闸）');
+  assert.equal(old.error.code, 'cancelled');
+  assert.equal(slow.calls[0].signal.aborted, true, '旧任务必须收到 abort');
+  // 旧任务晚到的失败不能污染状态（仍是 cancelled）；新任务照常 running。
+  slow.reject(slow.calls[0].signal.reason);
+  await first.job.promise.catch(() => {});
+  await flush();
+  assert.equal(table.get(first.job.id).status, 'cancelled');
+  assert.equal(table.get(forced.job.id).status, 'running');
+  table.close();
+});
+
+test('U4b force 不绕过并发闸：同 session+kind 异 key + running → 仍 busy，且不取消旧 job', () => {
+  const { table } = makeTable();
+  const first = table.start({
+    kind: 'handoff',
+    sessionId: 's1',
+    params: { edits: { 约束: 'a' } },
+    run: async () => 1,
+  });
+  const forced = table.start({
+    kind: 'handoff',
+    sessionId: 's1',
+    params: { edits: { 约束: 'b' } },
+    force: true,
+    run: async () => 2,
+  });
+  assert.equal(forced.busy, true);
+  assert.equal(forced.job.id, first.job.id);
+  assert.equal(table.list().length, 1);
+  assert.equal(table.get(first.job.id).status, 'running', '异 key force 不能顺手取消旧任务');
   table.close();
 });
 
@@ -282,6 +319,57 @@ test('U12 launch 之前不执行；成功 → done/result；job.promise 拿得�
   assert.equal(view.error, null);
   assert.equal(view.ttlAt >= view.endedAt, true);
   table.close();
+});
+
+test('U13 launch 后同 tick cancel/close → run 不执行，状态保持 cancelled（M1）', async () => {
+  const { table } = makeTable();
+  const slow = makeRun();
+  const started = table.start({ kind: 'handoff-preview', sessionId: 's1', run: slow.run });
+  assert.equal(table.launch(started.job.id), true);
+  const outcome = table.cancel(started.job.id); // 同一个 tick，setImmediate 回调还没跑
+  assert.equal(outcome.cancelled, true);
+  await flush();
+  assert.equal(slow.calls.length, 0, '已取消的任务不能再启动 run（否则副作用照跑）');
+  assert.equal(table.get(started.job.id).status, 'cancelled', '不能因为 run 没跑就丢状态');
+
+  const closeRun = makeRun();
+  const closing = table.start({ kind: 'compact', sessionId: 's2', run: closeRun.run });
+  assert.equal(table.launch(closing.job.id), true);
+  table.close(); // 卸载同样发生在 setImmediate 之前
+  await flush();
+  assert.equal(closeRun.calls.length, 0, '表已关闭时 launch 的回调不能再启动 run');
+  assert.equal(table.get(closing.job.id).status, 'cancelled');
+});
+
+test('U14 动作不响应 abort（never-settle）：cancel/close 后 job.promise 仍结算为 cancelled（M3）', async () => {
+  const { table } = makeTable();
+  const never = () => new Promise(() => {});
+  const cancelled = table.start({ kind: 'handoff-preview', sessionId: 's1', run: never });
+  table.launch(cancelled.job.id);
+  await flush();
+  table.cancel(cancelled.job.id);
+  await assert.rejects(
+    () => cancelled.job.promise,
+    (error) => {
+      assert.equal(error.name, 'AbortError');
+      assert.equal(error.code, 'cancelled');
+      assert.equal(error.message, '任务已取消');
+      return true;
+    },
+    'cancel 必须结清 compat 层 deferred，不能永久悬挂',
+  );
+  assert.equal(table.get(cancelled.job.id).status, 'cancelled');
+
+  const closed = table.start({ kind: 'compact', sessionId: 's2', run: never });
+  table.launch(closed.job.id);
+  await flush();
+  table.close();
+  await assert.rejects(
+    () => closed.job.promise,
+    (error) => error.code === 'cancelled' && error.message.includes('卸载'),
+    '卸载路径同样要结清 deferred',
+  );
+  assert.equal(table.get(closed.job.id).status, 'cancelled');
 });
 
 let passed = 0;
