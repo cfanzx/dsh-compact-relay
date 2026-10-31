@@ -101,6 +101,57 @@ node scripts/dcr-debug.mjs failures --last 5
 没有记录时先判断「版本/埋点」：`events` 一条都没有 → 插件 < 0.5.6 或刚装还没动作；
 有 `v` 字段可排除「旧版没埋点」。`busy`/`changed` 不写失败投影（双击/范围变化是正常状态）。
 
+### E「长动作一直转 / 202 pending / job 查不到」
+
+0.5.7 起压缩、交接、交接预览都是「起 job → 轮询」；先分清卡在哪一层：
+
+| 现象 | 含义 | 下一步 |
+|---|---|---|
+| `job-start` 200，`status:'running'` | 任务已进内存表，模型调用在后台跑 | 用返回的 `jobId` 轮询 `job-status`；不要重发动作 |
+| 旧动作（`compact`/`handoff`/`handoff-preview`）返回 **HTTP 202** | 15s 兼容预算内没跑完，body 是 `{ok:false, code:'pending', pending:true, jobId, kind, message}` | **job 没有失败也没有中止**；拿 `jobId` 接着轮询，不要重试旧动作 |
+| `job-status` 200，`status:'running'` | 还在跑；`elapsedMs` 是已耗时 | 500ms 一次轮询即可（客户端上限 5 分钟） |
+| `job-status` 200，`status:'done'` | 完成，`result` 与旧同步响应同形 | 直接用 `result` |
+| `job-status` 200，`status:'error'/'cancelled'` | 失败/取消；`error:{code,message}`，取消不是 fail | 失败走事件流看 `code`；取消是中性结果 |
+| `job-status`/`job-cancel` **404 `code:'nojob'`** | 任务不存在、已过 TTL，或**宿主重启清空了内存表** | 提示用户「任务已中断，请重试」；事件流仍可能留下 start 行 |
+
+`job-cancel` 返回 `{ok:true, cancelled, jobId, status}`；任务已结束时 `cancelled:false`、状态不变（幂等）。
+jobs 表是**内存表**：TTL 10 分钟（settle 后）、上限 50 条、running 不淘汰、**宿主重启即丢**。
+`job-start` 的幂等键是 `sessionId + kind + 参数`：同 key running 复用；同会话同 kind 不同参数 → 409 `busy`。
+
+**用 dcr-debug 找 jobId**：`jobId` 在动作事件的 `context` 里（`compact` / `handoff-preview` / `handoff`
+的 start 与 end 两行同值）：
+
+```sh
+node scripts/dcr-debug.mjs events --action handoff --last 5
+node scripts/dcr-debug.mjs show <id>          # context: jobId=dcrjob-…
+node scripts/dcr-debug.mjs events --raw --last 10   # 想看两行原始记录时
+```
+
+**stalled 怎么读**：进程被杀/卡死时只剩 start 行、没有 end 行。读侧在 start 超过 **10 分钟**后把它折叠成
+`outcome:'stalled'`；`show <id>` 的表头直接打印 `stalled/running`（end 缺失），`events` 表的结果列显示
+`stalled`。它不是 `fail`、没有 code，含义是「这次动作没有正常收尾」；若同时 `job-status` 404，
+基本可判定宿主重启/崩溃。10 分钟内只显示进行中，不要过早下结论。
+
+### F「客户端自己报的错（client-error）」
+
+0.5.7 新增 B 级动作 `client-error`：浏览器侧遇到 **fetch 抛错 / 非 2xx / 空 body / 404 nojob / 超时**
+时上报一次（同一次失败只报一次，`busy`/`changed`/`cancelled` 属业务语义不报）。事件 `context` 固定三个字段：
+
+| 字段 | 内容 | 上限 |
+|---|---|---|
+| `status` | HTTP 状态码；网络错误为 `0`（缺省不写） | 数字 |
+| `bodyHead` | 响应体开头，用来判断是不是网关/宿主返回的 HTML 或错误 JSON | **80 码点**（客户端按码点裁，不切坏 emoji） |
+| `kind` | 失败类型短串：`network` / `http` / `empty` / `pending`（202 但没 jobId）/ `nojob` / `timeout` / 轮询错误码 | 80 字符 |
+
+```sh
+node scripts/dcr-debug.mjs failures --action client-error --last 5
+node scripts/dcr-debug.mjs show <id>
+```
+
+`code` 取客户端带的错误码（没有则 `client`），`statusCode` 是 HTTP 状态；`message` 是客户端文案。
+如果 `bodyHead` 是 HTML（`<!doctype` / `<html`），通常是宿主/反代在模型跑完前断了响应；
+如果 `kind=nojob`，按上一节的「宿主重启清空任务表」处理。
+
 ## 4. 导出给用户
 
 ```sh

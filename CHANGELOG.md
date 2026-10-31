@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.5.7（2026-10-31，0.5.6 的长动作异步化版）
+
+> 主题：**长动作不再依赖单个 HTTP 请求**。压缩、交接、交接预览改为「起任务 → 轮询」：
+> 三个动作请求都在 2 秒内返回，模型调用在后台 job 里跑；15 秒预算内没跑完的旧同步动作
+> 回 **202 `ok:false, code:'pending'` + `jobId`**，客户端接着轮询，不再赌浏览器/传输层能扛住 20 秒。
+> 测试 **489 → 516 PASS**（新增 27 条：`jobs-unit` 15、`jobs-http` 12）。
+
+### 服务端：job 层与三个短动作
+
+- **内存 job 表**（`lib/dsh/jobs.js`）：`start / launch / get / latest / cancel / close`，任务 id 前缀
+  `dcrjob-`；`kind` 限 `handoff-preview` / `handoff` / `compact`。同一 `sessionId + kind + 参数` 的
+  running 任务复用（防连点）；同会话同 kind 但参数不同 → 409 `busy`「上一次还在跑，先取消再试」；
+  `force:true` 跳过复用。TTL 10 分钟（与事件流 `STALLED_MS` 对齐）、上限 50 条、running 永不 TTL。
+- **三个 <2s 动作**：`job-start`（带 `sessionId`，返回 `{ok:true, jobId, kind, status:'running', reused, startedAt}`）、
+  `job-status`（轮询；`{ok:true, jobId, kind, status, startedAt, elapsedMs, result?, error?}`）、
+  `job-cancel`（`{ok:true, cancelled, jobId, status}`）。后两个不需要 `sessionId`；
+  未知/过期任务统一 404 `code:'nojob'`。
+- **旧同步动作保留**：`handoff-preview` / `handoff` / `compact` 改走同一张 job 表的兼容层——
+  15 秒（`timeouts.jobCompatMs`）内完成回 200 原响应体（逐字段不变）；超时回
+  **202** `{ok:false, code:'pending', pending:true, jobId, kind, message:'任务进行中（约十几秒），请稍候…'}`
+  （刻意 `ok:false`，只判 `res.ok` 的外部脚本不会把 pending 当成功）。超时**不中止** job。
+- **失败/取消**：job 内抛错原样 rethrow，仍走既有 `sendFailure` + 失败留档（不新增错误出口）；
+  取消 → `status:'cancelled'`、事件 end 行 `outcome:'cancelled'`，不记 fail。`handoff` 的取消信号
+  与 `runIdle` 的 idle 信号合并，取消不再丢 idle 保护。
+- **事件**：`compact` / `handoff-preview` / `handoff` 的 start/end 行新增可选 `jobId`；
+  新增 B 级动作 `client-error`（`context: {status, bodyHead, kind}`，`bodyHead` ≤80 码点）。
+- **命令两段式**：`/handoff` 起 job 后立即返回（文本含 jobId + 「用 /handoff status 查看」）；
+  `/handoff status [jobId]` 查进度/结果；命令不轮询、不接 UI 请求的 signal（避免请求结束误杀后台 job）。
+
+### 客户端：轮询、进度、取消、错误留档
+
+- 交接预览 / 压缩 / 交接三处改发 `job-start` 并轮询；**先判 pending 再判失败**（202 的 HTTP 是 2xx
+  但 body 是 `ok:false`，顺序反了会把 pending 当失败）。`pollJob` = 0ms 首轮 + 500ms 间隔 + 5 分钟上限。
+- **进度 toast 只显示「已 Ns」**（1s 一刷；三个动作都没有可靠进度回调，不写百分比），持续到轮询结束；
+  toast 上的「取消」优先发 `job-cancel`（按 jobId 精确取消），拿不到 jobId 才回落旧 `action:'cancel'`。
+- **`client-error` 上报**：fetch 抛错 / 非 2xx / 空 body / 404 nojob / 超时时上报一次
+  `{action:'client-error', kind, status, bodyHead, code, message, sessionId?}`；同一次失败只报一次，
+  永不 reject。`bodyHead` 按码点裁到 80，不切坏 emoji；`busy/changed/cancelled` 属业务语义不上报。
+- 取消提示分中性/中断两档：「已取消，会话记录没有改动。」与「任务已中断（宿主可能重启过），请重试。」。
+
+### 兼容与限制
+
+- **旧客户端（0.5.6）连新服务端**：最长 15s 后拿到 202 `pending` + message，交接预览会弹
+  「任务进行中（约十几秒），请稍候…」而不是「没有拿到草稿」；功能不接管，需升级客户端才能自动轮询。
+- **新客户端连旧服务端（<0.5.7）不支持**：旧服务端不认 `job-start`，会直接报未知动作。
+  客户端与服务端同包发布，未做跨版本降级。
+- **jobs 是内存表**：宿主重启即清空，`job-status`/`job-cancel` 回 404 `nojob`，客户端提示「任务已中断」；
+  崩溃留下的孤立 start 事件行在 10 分钟后由读侧折叠为 `stalled`（不是失败）。
+- 事件流上限、TTL、job 表都是本机内存/文件态，不跨宿主同步；`DCR_JOBS=0` 降级开关未实现。
+
+### 测试与文档
+
+- 新增 `test/jobs-unit.mjs`（15 条：id 前缀/复用/异 key busy/force/settle TTL/上限淘汰/latest/cancel/close/
+  launch 同 tick 取消/never-settle 结清）与 `test/jobs-http.mjs`（12 条：job-start <50ms、轮询 done、
+  `jobCompatMs=50` 逼 202、202 形状、缺 jobId 400、404 nojob、取消真传到动作、client-error 落行、
+  compact/handoff 兼容层真路径、`/handoff status` 成功路径、取消收口）。
+- 新增独立慢 e2e `test/e2e/slow-action.mjs`（**不进 `npm test`**）：隔离 DSH + 本地 OpenAI 兼容 stub，
+  草稿回复延迟 25s；实测 `job-start` 15ms、运行中 `job-status` 7ms、任务总耗时 25.2s。
+  运行：`npm run test:e2e:slow`。
+
 ## 0.5.6（2026-10-30，0.5.5 的功能版）
 
 > 四条线一起进：**能查案**（动作事件流 + 失败留档 + 只读 debug CLI）、**看得见**（泄压阀、

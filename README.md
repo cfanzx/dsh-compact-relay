@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.5.6-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.5.7-blue)](CHANGELOG.md)
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/cfanzx/badge.svg)](https://hub.xerj.org/contributors/cfanzx)
 
 收录于 [XERJ Corpus Hub](https://hub.xerj.org/corpus/cfanzx--dsh-compact-relay) · 钉住 commit `435601b` · MIT · 带署名
@@ -64,7 +64,7 @@
 
 ### 4. 结构化会话交接
 
-执行 `/handoff` 命令可生成包含九个标准部分的交接文档（总体目标、约束条件、已完成项、当前进度、涉及文件、关键决策、已知问题、未完成项、下一步计划），并在当前工作区自动创建新会话、注入该文档并完成切换，原会话完整保留。
+执行 `/handoff` 会起一个后台交接任务并立即返回任务 id（0.5.7 两段式：再用 `/handoff status` 查进度或结果），完成后生成包含九个标准部分的交接文档（总体目标、约束条件、已完成项、当前进度、涉及文件、关键决策、已知问题、未完成项、下一步计划），并在当前工作区自动创建新会话、注入该文档并完成切换，原会话完整保留。菜单里的「交接新会话」入口会自动轮询进度并显示「已 Ns」，不需要手动查。
 
 ### 5. 接力条：交接链与双向跳转
 
@@ -79,19 +79,16 @@
 
 > 老链（0.5.0 之前生成的会话）没有交接单路径记录，界面显示「暂无交接单」而不是猜一个——它会先向父会话只读回查一次。
 
-## 0.5.6 新增
+## 0.5.7 新增
 
-> 0.5.6 已发布；逐条说明见 [CHANGELOG.md](CHANGELOG.md) 的 0.5.6 小节。
+> 0.5.7 是「长动作异步化」版；逐条说明见 [CHANGELOG.md](CHANGELOG.md) 的 0.5.7 小节。
 
-- **动作事件流（本地可查）**：每个动作 start/end 两行写进 `$DSH_HOME/compact-relay-events.jsonl`（800 行上限、保底 200 条失败，写盘永不抛）；失败是它的读侧投影，不另存一份。
-- **泄压阀提示（可见化）**：摘要份数到上限后，压缩会把旧摘要一起合并（不可逆）。到上限前最后一次常规压缩起，悬停卡、菜单头、压缩项 note 三处提前提示「之后每次都会合并」；确认卡里另有一块醒目警示（停止不了、只能先交接或继续）。
-- **失败诊断可复制**：压缩/交接失败时，返回里带 `failureId` 与脱敏后的 `failure` 块，toast 上出现「复制诊断」——一键复制失败 id、错误码、动作、trigger、耗时等，直接贴进 issue 即可，不必再翻日志。
-- **`dcr-debug` 只读诊断 CLI**：`node scripts/dcr-debug.mjs events|failures|show|state|logs|export`，读 `$DSH_HOME` 下的事件流 / state 快照，或对**本机回环**的宿主发只读 GET；不写文件、不触发压缩、不读凭据。`--help` 看全部命令。
-- **接力条兜底（0.5.6-C）**：宿主还没把会话装进内存时，接力条会只读一次持久化日志补链，不要求会话已打开；普通会话零额外请求。配合 `<html>` 上的 `data-cr-relay-dock / chain / state` 诊断位定位「接力条不显示」，取证步骤见 [docs/relay-bar-debug.md](docs/relay-bar-debug.md)。
-- **压缩归属**：每次压缩都记下「谁发起的」——菜单 / 命令 / 交接 / DSH 原生自动 / 来源不明。压缩完成提示、悬停卡、菜单「查看上次压缩」各显示一行；注入历史的 checkpoint 摘要头也多一行
-  `〔压缩归属：菜单压缩·用户｜22 条｜32.5k tokens｜未合并旧摘要｜#a1b2c3d4〕`，模型读历史时能直接看到这段是谁压的。
-  **没有归属证据时一律显示「来源不明（无归属记录）」，绝不猜成原生自动压缩**；怎么读见 [TUTORIAL.md](TUTORIAL.md) 第 5 节。
-  调试端点：`GET /api/compact-relay-attribution?limit=20&sessionId=…`（只读，返回最近 N 次压缩归属）。
+- **长动作不再依赖单请求**：压缩、交接、交接预览改为「起后台任务 → 轮询」。`job-start` / `job-status` / `job-cancel` 都在 2 秒内返回；旧同步动作 15 秒没跑完回 **202** `{ok:false, code:'pending', jobId}`，客户端拿 jobId 接着轮询，不再赌浏览器/传输层能扛住 20 秒。
+- **进度与取消**：toast 只显示「正在压缩旧会话…（已 12s）」这类**已用秒数**（不写百分比），点「取消」按 jobId 精确中止；取消是中性结果，已提交的压缩不回滚。
+- **`/handoff` 两段式**：`/handoff` 立即返回任务 id，`/handoff status [jobId]` 查进度或结果；命令不再把 UI 请求挂十几秒。菜单/指示环入口会自动轮询，不用手动查。
+- **`client-error` 留档**：浏览器侧 fetch 抛错 / 非 2xx / 空 body / 404 / 超时会上报一次（`status` / `bodyHead` ≤80 码点 / `kind`），用 `dcr-debug failures --action client-error` 可查，不再只有「没反应」。
+- **jobs 是内存表**：TTL 10 分钟、上限 50 条、宿主重启即丢（`job-status` 404 `nojob` →「任务已中断，请重试」）；崩溃留下的孤立 start 事件行 10 分钟后读作 `stalled`。旧客户端（0.5.6）连新服务端只会看到 202 的 pending 文案，需升级后才会自动轮询。
+- **测试 489 → 516 PASS**：新增 `jobs-unit` 15 条 + `jobs-http` 12 条；独立慢 e2e `npm run test:e2e:slow` 用本地 25s stub 实测 `job-start` 15ms、运行中 `job-status` 7ms、任务总耗时 25.2s（不进 `npm test`）。
 
 ## 指示环图例说明
 
@@ -180,7 +177,8 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 | --- | --- |
 | `/bc` | 预览压缩：显示目标范围、消息条数及预计释放容量 |
 | `/bc confirm` | 执行已预览的压缩操作 |
-| `/handoff` | 生成九段式交接文档并创建、切换至新会话 |
+| `/handoff` | 开始交接：起后台任务并立即返回任务 id（0.5.7 两段式第一步） |
+| `/handoff status [jobId]` | 查交接进度或结果（不带 jobId 查本会话最近一次交接） |
 | `/favorite` / `/favorite list` | 当前会话收藏目录（编号 + 角色 + 标题） |
 | `/favorite mark [seq]` | 收藏一条（不带 seq 标最后一条已完成回复；不需要会话开着） |
 | `/favorite last` | 收藏我刚发出的那条消息 |
@@ -207,7 +205,7 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 
 ## 版本状态与开源许可
 
-- **当前版本**：**0.5.6**（0.5.5 的功能版）。版本线：0.3.1 首个公开版本；0.3.2 修设置页链接与联系方式；0.3.3 Windows 适配；0.3.4 修判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线；**0.4.1** 统一原生压缩线显示口径；**0.4.2** 交接线保命补丁（硬上限 = 实际触发线 −5pp、三处告警 + 一键重算）；**0.5.0** 无痕交接（命名反转「历史 N」+ 新会话继承原名、输入框上方接力条、交接后自动归档旧会话 + 恢复入口）；**0.5.1** 收尾（祖先会话交接后接力条消失、0.5.0 前老链无条、归档入口死路与文案；pin 失效标注、原生压缩提前保护、置顶确认、归档开关、完整交接链、父→子入口；完整链在祖先未加载时只显示 1 层——改为服务端只读持久化日志一次读全，老宿主保留「打开并继续」兜底；设计定稿环只表达容量，pin 位置标记归 0.6 时间线）；**0.5.2** 契约快照 golden、record 形状唯一构造器、强制归档旧会话入口 + 二次确认/置顶确认、摘要缓存对齐（对话模型沿用主循环推理档位，生产命中 2–5% → 99.7%）；**0.5.3** 收藏（pin 退役；标记/落档两步解耦、无活会话可标、压缩后补标写快照）、推荐收藏（模型打分 + 三档阈值 + 必亮/屏蔽词 + 设置页试算；只点亮不自动收藏）、压缩预览卡补收藏区、P2 语义修正（already 顺序、错误码 404/503/500、归档响应瘦身、防漏杀加固）；**0.5.4** 0.5.3 debug：建议候选过滤工具角色、无正文条目标题兜底「第 N 条」、压缩后清理推荐建议投影；**0.5.5** 0.5.4 debug：已收藏星标常亮（CSS `:has()`，不依赖宿主哈希类名，hover 时其它动作照常出现）；**0.5.6** 能查案（动作事件流、500 恒带 code/failureId、toast 复制诊断、只读 `dcr-debug` CLI）、泄压阀可见化（合并旧摘要不再隐形）、接力条磁盘兜底与真机诊断位、压缩归属（谁发起 / 来源不明不猜）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
+- **当前版本**：**0.5.7**（0.5.6 的长动作异步化版）。版本线：0.3.1 首个公开版本；0.3.2 修设置页链接与联系方式；0.3.3 Windows 适配；0.3.4 修判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线；**0.4.1** 统一原生压缩线显示口径；**0.4.2** 交接线保命补丁（硬上限 = 实际触发线 −5pp、三处告警 + 一键重算）；**0.5.0** 无痕交接（命名反转「历史 N」+ 新会话继承原名、输入框上方接力条、交接后自动归档旧会话 + 恢复入口）；**0.5.1** 收尾（祖先会话交接后接力条消失、0.5.0 前老链无条、归档入口死路与文案；pin 失效标注、原生压缩提前保护、置顶确认、归档开关、完整交接链、父→子入口；完整链在祖先未加载时只显示 1 层——改为服务端只读持久化日志一次读全，老宿主保留「打开并继续」兜底；设计定稿环只表达容量，pin 位置标记归 0.6 时间线）；**0.5.2** 契约快照 golden、record 形状唯一构造器、强制归档旧会话入口 + 二次确认/置顶确认、摘要缓存对齐（对话模型沿用主循环推理档位，生产命中 2–5% → 99.7%）；**0.5.3** 收藏（pin 退役；标记/落档两步解耦、无活会话可标、压缩后补标写快照）、推荐收藏（模型打分 + 三档阈值 + 必亮/屏蔽词 + 设置页试算；只点亮不自动收藏）、压缩预览卡补收藏区、P2 语义修正（already 顺序、错误码 404/503/500、归档响应瘦身、防漏杀加固）；**0.5.4** 0.5.3 debug：建议候选过滤工具角色、无正文条目标题兜底「第 N 条」、压缩后清理推荐建议投影；**0.5.5** 0.5.4 debug：已收藏星标常亮（CSS `:has()`，不依赖宿主哈希类名，hover 时其它动作照常出现）；**0.5.6** 能查案（动作事件流、500 恒带 code/failureId、toast 复制诊断、只读 `dcr-debug` CLI）、泄压阀可见化（合并旧摘要不再隐形）、接力条磁盘兜底与真机诊断位、压缩归属（谁发起 / 来源不明不猜）；**0.5.7** 长动作异步化（job-start/status/cancel 三个短动作、15s 后 202 pending、客户端轮询 +「已 Ns」+ 取消、`/handoff` 两段式与 `/handoff status`、`client-error` 留档；jobs 内存表重启即丢）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
 - **开源许可**：采用 [MIT](LICENSE) 许可证，欢迎通过 [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues) 与 Pull Requests 提交反馈。
 
 ## 参考与致谢

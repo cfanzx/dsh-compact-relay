@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.4.1-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.5.7-blue)](CHANGELOG.md)
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/cfanzx/badge.svg)](https://hub.xerj.org/contributors/cfanzx)
 
 Indexed in the [XERJ Corpus Hub](https://hub.xerj.org/corpus/cfanzx--dsh-compact-relay) · pinned at `435601b` · MIT · with attribution
@@ -141,7 +141,8 @@ The first time a session is opened, the ring plays a brief highlight animation w
 | --- | --- |
 | `/bc` | Preview compaction: target range, message count, and estimated capacity to be freed |
 | `/bc confirm` | Execute the previewed compaction |
-| `/handoff` | Generate a nine-section handoff document, then create and switch to a new session |
+| `/handoff` | Start a background handoff job and return its job id immediately (two-phase step 1) |
+| `/handoff status [jobId]` | Show progress or the result of a handoff job (latest one when no id is given) |
 | `/pin` / `/unpin` | Pin or unpin a message; pinned messages are skipped during compaction |
 | `/bctest` | Small dry-run test (development debugging only) |
 
@@ -157,7 +158,7 @@ The first time a session is opened, the ring plays a brief highlight animation w
 
 ## Version and license
 
-- **Current version**: 0.4.2 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixed the compression-point judgment mechanism; 0.3.5 fixed the disabled compress button; 0.3.6 fixed the native-line parsing scope; 0.4.0 hardened the judgment mechanism, added diagnostics, pin retention, ledger, handoff metadata and the real native trigger line; 0.4.1 unified the native-line display: the ring, the settings page and the teaching card all show the actual trigger point with the configured threshold annotated; 0.4.2 is the handoff-line safety patch: hard cap = actual trigger −5pp with the same rule in the UI and on the server, over-limit saves are rejected with the target value, warnings in three places plus a one-click recalculation, a one-off notice after switching models, and documentation of the 40/60/67.8 lines). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
+- **Current version**: 0.5.7 (asynchronous long-running actions). 0.4.2 (0.3.1 was the first public release; 0.3.2 fixed settings links and contact details; 0.3.3 added Windows support; 0.3.4 fixed the compression-point judgment mechanism; 0.3.5 fixed the disabled compress button; 0.3.6 fixed the native-line parsing scope; 0.4.0 hardened the judgment mechanism, added diagnostics, pin retention, ledger, handoff metadata and the real native trigger line; 0.4.1 unified the native-line display: the ring, the settings page and the teaching card all show the actual trigger point with the configured threshold annotated; 0.4.2 is the handoff-line safety patch: hard cap = actual trigger −5pp with the same rule in the UI and on the server, over-limit saves are rejected with the target value, warnings in three places plus a one-click recalculation, a one-off notice after switching models, and documentation of the 40/60/67.8 lines; 0.5.0 invisible handoff with the relay bar and auto-archive; 0.5.1 relay-chain and pin-status fixes; 0.5.2 contract golden, force-archive and cache alignment; 0.5.3 favourites with recommended pins; 0.5.4 favourite-suggestion fixes; 0.5.5 always-visible preferred star; 0.5.6 local action event stream, merge-valve visibility, relay-bar disk fallback and compaction attribution; 0.5.7 asynchronous jobs — job-start/job-status/job-cancel return in under 2 seconds, legacy actions answer 202 pending + jobId after 15 seconds, the client polls with an "elapsed Ns" toast and cancellation, /handoff is two-phase with /handoff status [jobId], and client-error events record transport failures; the job table is in memory and is lost on host restart). Tested on macOS (DSH 0.2.1-rc.2) and Windows 11 (Node 24.22), using only public DSH exports. See [CHANGELOG.md](CHANGELOG.md) for changes, [ROADMAP.md](ROADMAP.md) for plans and known limitations, and [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md) for build and release workflows.
 - **License**: [MIT](LICENSE). Feedback and Pull Requests are welcome via [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues).
 
 ## Credits

@@ -79,6 +79,41 @@ PASS  e2e smoke：隔离 DSH + GUI 新建 live 会话 + 插件 state/action 联�
 
 排错经验：**别用 `pressure` 增长当「模型回复结束」的判据**——用户消息一进 surface，pressure 就已经涨了；此时发起压缩会 409「正在回复中」。要等 GUI 页面文本连续稳定（脚本里的 `waitReplyDone`）。
 
+## 2.6 慢动作 e2e（0.5.7，不花钱、不进 npm test）
+
+`slow-action.mjs` 验证「长动作不再依赖单个 HTTP 请求」：隔离 DSH 的模型路由指向脚本自起的
+本地 OpenAI 兼容 stub，草稿回复延迟 25s；然后调 `job-start`（`kind=handoff-preview`）并轮询。
+
+```bash
+# 完整流程（首次 rsync + pnpm install 约 15s，整轮约 40s）
+node test/e2e/slow-action.mjs
+
+# 复用隔离 home / 代码没改（更快）
+node test/e2e/slow-action.mjs --reuse --no-install
+
+# 缩短慢回复（只调脚本，不改默认 25s）
+node test/e2e/slow-action.mjs --delay 8
+```
+
+通过判据（实测 2026-10-31）：
+1. `job-start` **15ms** 返回 `jobId`（阈值 <2s）；
+2. 任务运行期间另一条 `job-status` **7ms** 返回 `running`（阈值 <2s，不被长动作阻塞）；
+3. 轮询 50 次（每次 ≤7ms）后 `status=done`，任务总耗时 **25.2s** ≥ stub 延迟 25.0s；
+4. `job-status.result.draft` 带回完整九段草稿（596 字）。
+
+实现要点（排错时先看这里）：
+- **stub 注入**：写隔离 profile 的 `cordis.patch.yml`，用 `llm-pi-ai` 自定义 provider
+  （`api: openai-completions`、本地 `baseURL`、`apiKeyEnv: SLOW_E2E_KEY`），并把
+  `agent-default-model` 改成该路由。**不要写 `reasoningEffort`**：模型没声明
+  `reasoningEfforts` 时宿主会报 `UNSUPPORTED_REASONING_EFFORT`。
+- **插件代码同步**：隔离 profile 从真实 home rsync 来，`pnpm-lock.yaml` 仍把
+  `dsh-compact-relay` 锁在 `~/.dsh/vendor`（旧版），`pnpm install` 不会因 package.json 改
+  `file:<repo>` 就重解析。脚本 `syncPluginCode()` 直接把仓库 `lib/` + `package.json` +
+  `cordis.patch.yml` 拷进隔离 `node_modules`，否则会测到旧代码（job-start 400「未知动作」）。
+- **Chrome**：优先复用 `127.0.0.1:9222`；没有时自动起临时 headless Chrome（临时 profile），
+  跑完关掉。不会动你正在用的浏览器。
+- 默认清理隔离 home 与临时 profile；`--keep` 保留 host/tab/临时 Chrome，按输出的提示收现场。
+
 ## 3. 它到底做了什么（6 步）
 
 1. **准备隔离 home**：`rsync -a` 真 `~/.dsh` → `/tmp/relay-e2e/home/.dsh`（排除大目录）。
