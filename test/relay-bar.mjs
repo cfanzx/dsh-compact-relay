@@ -171,6 +171,8 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
   const chainResponses = new Map();
   let chainResponse = { status: 404, payload: { ok: false, message: 'not found' } };
   const actionCalls = [];
+  // 0.5.7 长动作异步化：job-start 登记 kind，job-status 首轮即 done 并回原同步响应体。
+  const jobResults = new Map();
   const unarchiveCalls = [];
   let stateResponse = { ok: true, chain: null };
   let docResponse = { ok: true, name: 'handoff-x.md', path: '/tmp/handoffs/handoff-x.md', content: '# 交接单\n- 条目' };
@@ -300,7 +302,37 @@ function loadBundle({ withUnarchive = true, unarchiveError = false, unarchiveFai
     if (url === '/api/compact-relay-action' && options?.method === 'POST') {
       const body = JSON.parse(options.body);
       actionCalls.push(body);
+      // 0.5.7 长动作异步化：job-start → jobId；job-status 首轮即 done（回原同步动作的响应体）。
+      if (body.action === 'job-start') {
+        const jobId = `job-${actionCalls.length}`;
+        const result =
+          body.kind === 'handoff-preview'
+            ? previewResponse
+            : body.kind === 'handoff'
+              ? { ok: true, message: '交接完成', childId: 'child-session-1', path: '/tmp/handoffs/handoff-x.md' }
+              : { ok: true, message: '压缩完成' };
+        jobResults.set(jobId, { kind: body.kind, result });
+        return Promise.resolve(
+          jsonResponse(200, { ok: true, jobId, kind: body.kind, status: 'running', reused: false, startedAt: Date.now() }),
+        );
+      }
+      if (body.action === 'job-status') {
+        const entry = jobResults.get(body.jobId);
+        if (entry === undefined) return Promise.resolve(jsonResponse(404, { ok: false, code: 'nojob', message: '任务不存在或已过期' }));
+        return Promise.resolve(
+          jsonResponse(200, {
+            ok: true,
+            jobId: body.jobId,
+            kind: entry.kind,
+            status: 'done',
+            startedAt: Date.now(),
+            elapsedMs: 1,
+            result: entry.result,
+          }),
+        );
+      }
       // 0.5.1 批 2：指示灯交接预览 / 确认交接（归档开关 + 置顶确认）。
+      // 0.5.7：新客户端走上面的 job-start/job-status；这两支保留给旧同步调用。
       if (body.action === 'handoff-preview') return Promise.resolve(jsonResponse(200, previewResponse));
       if (body.action === 'handoff') {
         return Promise.resolve(
@@ -1113,7 +1145,7 @@ test('交接预览：置顶会话必须明确选择「交接并归档（取消�
 
   runBtn.props.onClick();
   await new Promise((resolve) => setTimeout(resolve, 5));
-  const handoffCalls = harness.actionCalls.filter((call) => call.action === 'handoff');
+  const handoffCalls = harness.actionCalls.filter((call) => call.kind === 'handoff');
   assert.equal(handoffCalls.length, 1);
   assert.equal(handoffCalls.at(-1).archive, true);
   assert.equal(handoffCalls.at(-1).confirmUnpin, true, '确认归档必须显式带 confirmUnpin（服务端才归档）');
@@ -1132,7 +1164,7 @@ test('交接预览：选「只交接，保留置顶」→ archive:false（旧会
   findByAttr(renderer.tree, 'data-cr-handoff-keep').props.onClick();
   await new Promise((resolve) => setTimeout(resolve, 5));
 
-  const handoff = harness.actionCalls.filter((call) => call.action === 'handoff').at(-1);
+  const handoff = harness.actionCalls.filter((call) => call.kind === 'handoff').at(-1);
   assert.equal(handoff.archive, false);
   assert.equal(handoff.confirmUnpin, undefined, '不归档就不需要取消置顶确认');
 });
@@ -1187,7 +1219,7 @@ test('交接预览：取消勾选归档 → 不弹置顶提示，确认按钮变
 
   runBtn.props.onClick();
   await new Promise((resolve) => setTimeout(resolve, 5));
-  const handoff = harness.actionCalls.filter((call) => call.action === 'handoff').at(-1);
+  const handoff = harness.actionCalls.filter((call) => call.kind === 'handoff').at(-1);
   assert.equal(handoff.archive, false);
 });
 
@@ -2184,8 +2216,8 @@ test('C3 确认卡警示块：只有本次真的合并才出现（data-cr-merge-
   legacyRun.props.onClick();
   await legacyRenderer.settle();
   assert.ok(
-    legacyHarness.actionCalls.some((call) => call.action === 'compact'),
-    '老宿主点确认仍应照常发压缩请求（向后兼容）',
+    legacyHarness.actionCalls.some((call) => call.kind === 'compact'),
+    '老宿主点确认仍应照常发压缩请求（0.5.7 起为 job-start kind:compact，向后兼容）',
   );
 });
 

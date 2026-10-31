@@ -397,7 +397,8 @@ test('客户端产物：归属文案 + data-cr-* 归属钩子 + 3 处 trigger:ui
   const uiMenuSends = bundle.match(/trigger: 'ui-menu'/g) ?? [];
   assert.equal(uiMenuSends.length, 3, `应有 3 处 POST 带 trigger:'ui-menu'，实际 ${uiMenuSends.length}`);
   assert.ok(bundle.includes("action: 'preview'"), '菜单预览入口仍在');
-  assert.ok(bundle.includes("action: 'handoff-preview'"), '交接预览入口仍在');
+  assert.ok(bundle.includes("action: 'job-start'"), '长动作统一走 job-start 入口');
+  assert.ok(bundle.includes("kind: 'handoff-preview'"), '交接预览入口仍在');
 });
 
 test('客户端产物：不含任何 turn 推断（turn:null ⇒ native-auto 无从发生）', () => {
