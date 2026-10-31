@@ -558,12 +558,15 @@ assert.equal(bcBadArg.text.includes('用法'), true, '参数错误要给出用�
 
 const handoffDef = host.commands.find((definition) => definition.name === 'handoff');
 assert.equal(typeof handoffDef.handler, 'function');
-assert.equal(handoffDef.input, undefined, '/handoff 不带参数，不声明 input');
+assert.equal(typeof handoffDef.input?.hint, 'string', '/handoff 现在要带 status，必须声明 input.hint');
+assert.equal(handoffDef.input.hint.trim().length > 0, true);
 const handoffNoAgent = await handoffDef.handler({ rawInput: '', agent: null, signal: undefined, commandId: 'cmd-handoff' });
 assert.equal(handoffNoAgent.kind, 'error');
 assert.equal(handoffNoAgent.text.includes('会话'), true);
 const handoffWithArgs = await handoffDef.handler({ rawInput: 'all', agent: null, signal: undefined, commandId: 'cmd-handoff' });
 assert.equal(handoffWithArgs.kind, 'error');
+const handoffStatusNoJob = await handoffDef.handler({ rawInput: 'status', agent: null, signal: undefined, commandId: 'cmd-handoff' });
+assert.equal(handoffStatusNoJob.kind, 'error', '/handoff status 查不到任务时要回可读错误');
 
 // M6：钉住消息命令（/pin 钉最近一轮、/pin list、/unpin）。
 const pinDef = host.commands.find((definition) => definition.name === 'pin');

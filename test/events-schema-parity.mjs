@@ -101,6 +101,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     // 0.5.6 D1（压缩归属）：摘要模型 / 本次是否合并旧摘要（additive）。
     'model',
     'merged',
+    // 0.5.7：长动作异步化（start/end 行共享 jobId）。
+    'jobId',
   ],
   cancel: ['kind', 'inflight'],
   'handoff-preview': [
@@ -117,6 +119,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     'pairingBalanced',
     'lastSurfaceSeq',
     'lastSurfaceType',
+    // 0.5.7：长动作异步化（start/end 行共享 jobId）。
+    'jobId',
   ],
   handoff: [
     'phase',
@@ -133,6 +137,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
     'archive',
     'lastSurfaceSeq',
     'lastSurfaceType',
+    // 0.5.7：长动作异步化（start/end 行共享 jobId）。
+    'jobId',
   ],
   'force-archive': ['phase', 'surfaceNodes', 'archived', 'activity', 'status', 'hasChild'],
   recover: ['phase', 'surfaceNodes', 'archived', 'status'],
@@ -143,6 +149,8 @@ const EXPECTED_CONTEXT_KEYS = Object.freeze({
   diff: [],
   state: [],
   'native-auto': ['enabled'],
+  // 0.5.7：客户端错误（B 级动作，只有 end 行）；bodyHead 客户端先 clip 到 80 码点。
+  'client-error': ['status', 'bodyHead', 'kind'],
   unknown: [],
 });
 
