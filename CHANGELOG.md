@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.8（2026-11-05，本地正式）
+
+> 主题：**兼容最新 DSH 0.2.2-rc.1 + 收口独立评审 R1–R7 + 双平台真机验收**。
+> 真机三件套已通过：G1 真实宿主 GUI（Windows + macOS 双平台，含设置子页与接力条真实点击交互）、
+> G2 真模型（compact / handoff-preview / handoff + 子会话 deepseek-flash 接续问答）、
+> G7 重启语义（jobId 404 nojob + 会话跨重启持久化）。G6 双版本仍未做（遗留已知限制，见发布清单）。
+> 测试：**40 文件 / EXIT=0 / 519 `PASS` 行（本机 Windows 实测）+ 契约 6/6 + 慢动作 10/10**。
+
+### 生产修复（5 处兼容 + 独立评审收口）
+
+- **G8 子会话 flush 失败可见**（`lib/dsh/sessions.js`、`lib/actions/handoff.js`）：`createHandoffSession`
+  的 flush 失败不再静默，错误带进返回值 `childFlushError`；`runHandoff` 据此跳过归档、返回
+  `childFlushFailed:true`，message 不再以「交接完成」开头（改为「交接单已生成，但新会话落盘未确认」），
+  且不诱导重试→重复建会话（仍带 `childId`/`#child=`，新会话可在会话列表找回）。
+- **G9 鉴权 fail-closed**（`lib/adapters/http.js`）：`connection.requestRejection` 同步抛错 = 鉴权未知 →
+  403，不再退化成只查 Host 的兜底；connection 服务自身解析抛错也 fail-closed 403（R5，不落到 500）。
+  真实宿主契约（`@deepseek-ai/dsh-client-connection` `admit()`）为**同步**返回，无需 async。
+- **G10 快照 await**（`lib/index.js`）：`await readState(...)` 后再 `writeStateSnapshot`，快照不再恒 `nosession`。
+- **G10 落盘脱敏**（`lib/core/events.js`）：`context.bodyHead` 落盘前 `redactSecrets`（本地档：删凭据/邮箱，保留路径/sessionId）。
+- **Windows 兼容**（`lib/dsh/native-compaction.js`）：`resolveProfileDir` 用 `path.isAbsolute`，Windows 盘符路径首次生效。
+- **客户端消费 `childFlushFailed`**（`lib/client/40-handoff.js`、`lib/client/30-indicator.js`、
+  `lib/adapters/commands.js`）：命令卡与接力条都不再报「完全成功」，改为「新会话已建好，但落盘未确认（可能缺内容）」。
+  bundle 重建。
+
+### 测试与文档
+
+- R1：`test/relay-chain-endpoint.mjs` 鉴权回归透传 loopback Host（基线 200 / 修复 403，有区分力）；
+  R5 增 connection getter 抛错 → 403 用例。
+- R6：`test/plugin-load.mjs` 320ms 定长等待改有界轮询（≤2s）。
+- 补跑遗漏的 `test/events-cli-path.mjs`（隔离中文+空格目录，9/9）。
+- R2/R4 报告口径修正：本机 npm 是坏 shim，改用绝对路径 node/pnpm；40 文件 / 519 PASS 行；
+  基线在本机 Windows 是红的（`handoff-guard`/`force-archive` 两处，本轮从红到绿）。
+
 ## 0.5.7（2026-10-31，0.5.6 的长动作异步化版）
 
 > 主题：**长动作不再依赖单个 HTTP 请求**。压缩、交接、交接预览改为「起任务 → 轮询」：

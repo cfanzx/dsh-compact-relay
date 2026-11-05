@@ -137,16 +137,40 @@ const cueContext = host.promptContexts[0];
 assert.equal(cueContext.name, 'compact-relay:compress-cue');
 assert.equal(cueContext.order, 300);
 assert.equal(typeof cueContext.text, 'function');
-// 缓存由 session/event 防抖更新：驱动一条事件后等 150ms 去抖结束。
+// R6：有界条件等待替代定长 320ms——150ms 去抖 + 异步 readState，慢机/高负载下 320ms 可能不够。
+const waitFor = async (condition, timeoutMs, label) => {
+  const started = Date.now();
+  for (;;) {
+    if (condition()) return;
+    if (Date.now() - started >= timeoutMs) throw new Error(`等待超时（${timeoutMs}ms）：${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+const snapPath = path.join(dshHome, 'compact-relay-state.json');
+// 缓存由 session/event 防抖更新：驱动一条事件后，等 readState 完成、快照落盘（快照在缓存更新之前写）。
 host.eventHandlers[0].listener({ id: 'session-cue' }, { type: 'user/message' });
-await new Promise((resolve) => setTimeout(resolve, 320));
+await waitFor(() => {
+  if (!fs.existsSync(snapPath)) return false;
+  try {
+    return JSON.parse(fs.readFileSync(snapPath, 'utf8')).sessionId === 'session-cue';
+  } catch {
+    return false;
+  }
+}, 2000, 'session-cue 状态快照写入');
 const cueText = cueContext.text({ agent: { id: 'agent-cue', session: { id: 'session-cue' } } });
 assert.equal(typeof cueText, 'string');
 assert.equal(cueText.includes('mark_compress_point'), true, '区间内提示要点名工具');
 assert.equal(cueText.includes('20%'), true, '容量按 5% 桶显示 20%');
+// 0.5.8 S1（G10）：state 快照必须拿到 resolved state（不是 Promise）——文件里 sessionId 非空。
+assert.equal(fs.existsSync(snapPath), true, 'state 快照应已写入（readState await 后再写快照）');
+const snap = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+assert.equal(snap.schema, 'dcr-state-snapshot/v1');
+assert.equal(snap.sessionId, 'session-cue', '快照 sessionId 应为最近触发刷新的会话');
 // 区间外（session-live 只有 1234/200000 ≈ 0.6%，低于最小压缩线）→ 空串。
 host.eventHandlers[0].listener({ id: 'session-live' }, { type: 'user/message' });
-await new Promise((resolve) => setTimeout(resolve, 320));
+// 区间外会话 cue 文本在去抖前后恒为空串（无可区分的缓存观测点，快照又有 10s 节流），
+// 这里用有界轮询替代定长 320ms，只等去抖窗口过去、确保事件已处理不残留异步抛错。
+await waitFor(() => cueContext.text({ agent: { session: { id: 'session-live' } } }) === '', 1000, 'session-live 区间外提示为空');
 assert.equal(cueContext.text({ agent: { session: { id: 'session-live' } } }), '', '区间外不提示');
 // 异常安全：text 回调不能把宿主组装 prompt 搞挂。
 assert.equal(cueContext.text(undefined), '');

@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-compact-relay?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-compact-relay)
 [![DSH](https://img.shields.io/badge/DSH-0.2.x-4d6bfe)](https://www.deepseek.com/harness/)
 [![license](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.5.7-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.5.8-blue)](CHANGELOG.md)
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/cfanzx/badge.svg)](https://hub.xerj.org/contributors/cfanzx)
 
 收录于 [XERJ Corpus Hub](https://hub.xerj.org/corpus/cfanzx--dsh-compact-relay) · 钉住 commit `435601b` · MIT · 带署名
@@ -79,6 +79,16 @@
 
 > 老链（0.5.0 之前生成的会话）没有交接单路径记录，界面显示「暂无交接单」而不是猜一个——它会先向父会话只读回查一次。
 
+## 0.5.8 新增
+
+> 0.5.8 是「兼容 DSH 0.2.2-rc.1 + 双平台真机验收」版；逐条见 [CHANGELOG.md](CHANGELOG.md) 的 0.5.8 小节。
+
+- **兼容最新 DSH 0.2.2-rc.1**：Windows 11 与 macOS 双平台真实 DSH Web GUI 加载 0.5.8，用真实 deepseek-flash 走通压缩 / 交接 / 子会话接续问答，并验证重启语义（任务中断可感知、会话跨重启持久）。
+- **5 处生产修复**：Windows 路径兼容（`resolveProfileDir` 认盘符绝对路径）、鉴权 fail-closed（connection 同步抛错不再退化成只查 Host 的兜底）、子会话 flush 失败可见（不再报「完全成功」）、快照落盘 await 修复（不再恒 `nosession`）、落盘脱敏（`bodyHead` 写入前 `redactSecrets`）。
+- **客户端消费 `childFlushFailed`**：命令卡与接力条把「新会话落盘未确认」如实呈现，不再报成功。
+- **测试 519 `PASS`**：40 文件 / EXIT=0 / 519 `PASS` 行（Windows 实测）+ 契约 6/6 + 慢动作 10/10。
+- **已知限制**：G6 双版本（0.5.6 客户端 ↔ 0.5.8 服务端）未做，仍登记为已知限制，不声称 0.5.6 混用兼容。
+
 ## 0.5.7 新增
 
 > 0.5.7 是「长动作异步化」版；逐条说明见 [CHANGELOG.md](CHANGELOG.md) 的 0.5.7 小节。
@@ -118,7 +128,7 @@
 
 ## 安装
 
-**环境要求**：DSH 桌面版或 `dsh web` 0.2.x（已于 0.2.1-rc.2 测试通过），Node.js 22+（插件跟随 DSH 自带运行时）。若要在源码里跑测试，需要 Node **22.15+**（测试脚手架用到 `node:module.registerHooks`）。测试已在 macOS 与 Windows 11（Node 24.22）实测全部通过。
+**环境要求**：DSH 桌面版或 `dsh web` 0.2.x（已于 0.2.2-rc.1 测试通过），Node.js 22+（插件跟随 DSH 自带运行时）。若要在源码里跑测试，需要 Node **22.15+**（测试脚手架用到 `node:module.registerHooks`）。测试已在 macOS 与 Windows 11（Node 24.22）实测全部通过。
 
 ```sh
 dsh plugin --profile desktop add dsh-compact-relay
@@ -205,7 +215,7 @@ dsh plugin --profile desktop add github:cfanzx/dsh-compact-relay
 
 ## 版本状态与开源许可
 
-- **当前版本**：**0.5.7**（0.5.6 的长动作异步化版）。版本线：0.3.1 首个公开版本；0.3.2 修设置页链接与联系方式；0.3.3 Windows 适配；0.3.4 修判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线；**0.4.1** 统一原生压缩线显示口径；**0.4.2** 交接线保命补丁（硬上限 = 实际触发线 −5pp、三处告警 + 一键重算）；**0.5.0** 无痕交接（命名反转「历史 N」+ 新会话继承原名、输入框上方接力条、交接后自动归档旧会话 + 恢复入口）；**0.5.1** 收尾（祖先会话交接后接力条消失、0.5.0 前老链无条、归档入口死路与文案；pin 失效标注、原生压缩提前保护、置顶确认、归档开关、完整交接链、父→子入口；完整链在祖先未加载时只显示 1 层——改为服务端只读持久化日志一次读全，老宿主保留「打开并继续」兜底；设计定稿环只表达容量，pin 位置标记归 0.6 时间线）；**0.5.2** 契约快照 golden、record 形状唯一构造器、强制归档旧会话入口 + 二次确认/置顶确认、摘要缓存对齐（对话模型沿用主循环推理档位，生产命中 2–5% → 99.7%）；**0.5.3** 收藏（pin 退役；标记/落档两步解耦、无活会话可标、压缩后补标写快照）、推荐收藏（模型打分 + 三档阈值 + 必亮/屏蔽词 + 设置页试算；只点亮不自动收藏）、压缩预览卡补收藏区、P2 语义修正（already 顺序、错误码 404/503/500、归档响应瘦身、防漏杀加固）；**0.5.4** 0.5.3 debug：建议候选过滤工具角色、无正文条目标题兜底「第 N 条」、压缩后清理推荐建议投影；**0.5.5** 0.5.4 debug：已收藏星标常亮（CSS `:has()`，不依赖宿主哈希类名，hover 时其它动作照常出现）；**0.5.6** 能查案（动作事件流、500 恒带 code/failureId、toast 复制诊断、只读 `dcr-debug` CLI）、泄压阀可见化（合并旧摘要不再隐形）、接力条磁盘兜底与真机诊断位、压缩归属（谁发起 / 来源不明不猜）；**0.5.7** 长动作异步化（job-start/status/cancel 三个短动作、15s 后 202 pending、客户端轮询 +「已 Ns」+ 取消、`/handoff` 两段式与 `/handoff status`、`client-error` 留档；jobs 内存表重启即丢）。已在 macOS（DSH 0.2.1-rc.2）与 Windows 11（Node 24.22）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
+- **当前版本**：**0.5.8**（0.5.7 的兼容与双平台验收版）。版本线：0.3.1 首个公开版本；0.3.2 修设置页链接与联系方式；0.3.3 Windows 适配；0.3.4 修判断机制并补交接单渲染；0.3.5 修无活 agent 时压缩按钮误禁；0.3.6 修原生压缩线解析作用域（BUG-012）；**0.4.0** 判断机制加强（cue 文案 v2 + 注入门控 + 计量）、诊断包、压缩预览建议锁定、pin 保留契约、轻账本累计、交接预览两段可编辑、接力链元数据、原生自动压缩真实触发线；**0.4.1** 统一原生压缩线显示口径；**0.4.2** 交接线保命补丁（硬上限 = 实际触发线 −5pp、三处告警 + 一键重算）；**0.5.0** 无痕交接（命名反转「历史 N」+ 新会话继承原名、输入框上方接力条、交接后自动归档旧会话 + 恢复入口）；**0.5.1** 收尾（祖先会话交接后接力条消失、0.5.0 前老链无条、归档入口死路与文案；pin 失效标注、原生压缩提前保护、置顶确认、归档开关、完整交接链、父→子入口；完整链在祖先未加载时只显示 1 层——改为服务端只读持久化日志一次读全，老宿主保留「打开并继续」兜底；设计定稿环只表达容量，pin 位置标记归 0.6 时间线）；**0.5.2** 契约快照 golden、record 形状唯一构造器、强制归档旧会话入口 + 二次确认/置顶确认、摘要缓存对齐（对话模型沿用主循环推理档位，生产命中 2–5% → 99.7%）；**0.5.3** 收藏（pin 退役；标记/落档两步解耦、无活会话可标、压缩后补标写快照）、推荐收藏（模型打分 + 三档阈值 + 必亮/屏蔽词 + 设置页试算；只点亮不自动收藏）、压缩预览卡补收藏区、P2 语义修正（already 顺序、错误码 404/503/500、归档响应瘦身、防漏杀加固）；**0.5.4** 0.5.3 debug：建议候选过滤工具角色、无正文条目标题兜底「第 N 条」、压缩后清理推荐建议投影；**0.5.5** 0.5.4 debug：已收藏星标常亮（CSS `:has()`，不依赖宿主哈希类名，hover 时其它动作照常出现）；**0.5.6** 能查案（动作事件流、500 恒带 code/failureId、toast 复制诊断、只读 `dcr-debug` CLI）、泄压阀可见化（合并旧摘要不再隐形）、接力条磁盘兜底与真机诊断位、压缩归属（谁发起 / 来源不明不猜）；**0.5.7** 长动作异步化（job-start/status/cancel 三个短动作、15s 后 202 pending、客户端轮询 +「已 Ns」+ 取消、`/handoff` 两段式与 `/handoff status`、`client-error` 留档；jobs 内存表重启即丢）；**0.5.8** 兼容 DSH 0.2.2-rc.1（Windows 路径 / 鉴权 fail-closed / 子会话 flush 失败可见 / 快照 await + 落盘脱敏；双平台真实 Web GUI + 真模型 + 重启语义验收）。已在 macOS 与 Windows 11（DSH 0.2.2-rc.1）完成测试，仅调用 DSH 公开导出接口。变更记录详见 [CHANGELOG.md](CHANGELOG.md)，后续规划与已知限制详见 [ROADMAP.md](ROADMAP.md)，构建与发布流程详见 [DEVELOPMENT.md](https://github.com/cfanzx/dsh-compact-relay/blob/main/DEVELOPMENT.md)。
 - **开源许可**：采用 [MIT](LICENSE) 许可证，欢迎通过 [GitHub Issues](https://github.com/cfanzx/dsh-compact-relay/issues) 与 Pull Requests 提交反馈。
 
 ## 参考与致谢

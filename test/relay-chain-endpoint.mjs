@@ -324,7 +324,7 @@ function createWebCtx() {
   };
 }
 
-async function callRoute(route, { method = 'GET', url }) {
+async function callRoute(route, { method = 'GET', url, headers = {} }) {
   const res = {
     status: undefined,
     body: '',
@@ -335,7 +335,7 @@ async function callRoute(route, { method = 'GET', url }) {
       this.body = payload ?? '';
     },
   };
-  route.handler({ method, url, headers: {} }, res);
+  route.handler({ method, url, headers }, res);
   await new Promise((resolve) => setTimeout(resolve, 20));
   return { status: res.status, json: res.body === '' ? null : JSON.parse(res.body) };
 }
@@ -383,6 +383,32 @@ test('HTTP：链端点同样先过宿主 connection 鉴权', async () => {
   const route = routes.find((entry) => entry.path === '/api/compact-relay-chain');
   const res = await callRoute(route, { url: '/api/compact-relay-chain?sessionId=session-self' });
   assert.equal(res.status, 401, '未认证必须 401');
+});
+
+test('HTTP：鉴权服务同步抛错时 fail-closed 拒绝（不退化成 Host 校验）', async () => {
+  const entries = buildChain(1);
+  const { ctx } = createCtx(entries);
+  const { routes, webCtx } = createWebCtx();
+  webCtx.connection = { requestRejection: () => { throw new Error('auth down'); } };
+  registerHttp(webCtx, { ctx });
+  const route = routes.find((entry) => entry.path === '/api/compact-relay-chain');
+  // R1：透传合法 loopback Host——基线代码会把鉴权异常降级成「只查 Host」并放行（200），
+  // 修复后鉴权抛错 = 状态未知 → 403。若仍发空 Host，基线兜底同样 403，测试就没有区分力。
+  const res = await callRoute(route, { url: '/api/compact-relay-chain?sessionId=session-self', headers: { host: '127.0.0.1:1234' } });
+  assert.equal(res.status, 403, '鉴权状态未知必须拒绝，不能退回只查 Host 的兜底');
+});
+
+test('HTTP：connection 服务解析抛错时 fail-closed 403（不落到 500）', async () => {
+  const entries = buildChain(1);
+  const { ctx } = createCtx(entries);
+  const { routes, webCtx } = createWebCtx();
+  // 模拟上下文已 dispose：拿不到 connection 属性，且 get('connection') 直接抛错。
+  delete webCtx.connection;
+  webCtx.get = () => { throw new Error('context disposed'); };
+  registerHttp(webCtx, { ctx });
+  const route = routes.find((entry) => entry.path === '/api/compact-relay-chain');
+  const res = await callRoute(route, { url: '/api/compact-relay-chain?sessionId=session-self', headers: { host: '127.0.0.1:1234' } });
+  assert.equal(res.status, 403, 'connection 服务解析失败必须 fail-closed 403，不能落到 500');
 });
 
 /* ------------------------------------------------------------------ *

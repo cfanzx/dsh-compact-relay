@@ -182,6 +182,18 @@ test('E6 context 按 action 白名单 pick；未知键丢弃；值只留标量/�
   assert.equal([...clipped.archive].length <= 80, true);
 });
 
+test('E6b context 字符串值落盘前按本地档脱敏（凭据/邮箱不落盘）', () => {
+  const picked = contextOf('client-error', {
+    status: 502,
+    bodyHead: 'Authorization: Bearer fixture-secret-value',
+    kind: 'handoff',
+  });
+  assert.equal(picked.status, 502);
+  assert.equal(picked.kind, 'handoff');
+  assert.equal(picked.bodyHead.includes('fixture-secret-value'), false, '凭据绝不能原样落盘');
+  assert.equal(picked.bodyHead.includes(REDACTION_PLACEHOLDER), true);
+});
+
 test('E7 读侧保留未来扩展的 context 键（旧数据不用迁移）', () => {
   const raw = {
     ...BASE,

@@ -507,7 +507,7 @@ test('静态守卫：生产代码里唯一传 stopActivity:true 的是 actions/f
         return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*');
       })
       .join('\n');
-    if (/\bstopActivity\s*:\s*true\b/.test(code)) hits.push(path.relative(repoRoot, file));
+    if (/\bstopActivity\s*:\s*true\b/.test(code)) hits.push(path.relative(repoRoot, file).split(path.sep).join('/'));
   }
   assert.deepEqual(hits, ['lib/actions/force-archive.js'], `stopActivity:true 只允许出现在强制归档动作里：${hits.join(', ')}`);
 

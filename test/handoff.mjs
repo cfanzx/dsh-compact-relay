@@ -1119,6 +1119,28 @@ test('debug: 压缩已提交但落盘失败 → 交接中止，不建新会话',
   assert.equal(record.createCalls.length, 0, '历史可能已改但未落盘时不能继续建新会话');
 });
 
+test('debug: 子会话落盘失败 → 不归档旧会话、报 childFlushFailed、不重复建会话', async () => {
+  const session = baseSourceSession();
+  const sourceId = session.id;
+  const { ctx, engine, record } = makeCtx();
+  // 只让「子会话」的 flush 失败（压缩/改名/父记录 flush 的对象都是源会话，不受影响）。
+  ctx.sessions.flush = async (target) => {
+    if (target !== undefined && target !== null && target.id !== sourceId) throw new Error('child disk full');
+  };
+  const deps = createPluginDeps({ ctx, engine, handoffDir: createTmpDir('relay-m3-') });
+  deps.log = { warn() {} };
+  const outcome = await handoff(deps, { agent: createAgent(session), archive: true });
+  assert.equal(outcome.ok, true, '交接本体完成（子会话已建），不能报失败诱导重试 → 重复建会话');
+  assert.equal(outcome.childFlushFailed, true, '落盘未确认必须显式标出，不能静默吞错');
+  assert.equal(typeof outcome.childId, 'string');
+  assert.equal(outcome.archive.status, 'skipped', '子会话未可靠持久化时不得归档旧会话');
+  assert.equal(outcome.archive.archived, false);
+  assert.equal(record.archiveCalls.length, 0, '绝不能真的调用 archiveSession');
+  assert.equal(record.createCalls.length, 1, '只建一个子会话，不重复创建');
+  assert.equal(outcome.message.includes('落盘未确认'), true, '不能报完全成功');
+  assert.equal(outcome.message.includes(`#child=${outcome.childId}`), true, '仍带回 childId 供切换');
+});
+
 test('debug: /bctest dry-run 不写历史，confirm 真替换，忙碌时拒绝', async () => {
   const session = baseSourceSession();
   const { ctx, engine } = makeCtx();

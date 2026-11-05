@@ -19,8 +19,9 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const CLI = new URL('../scripts/dcr-debug.mjs', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../scripts/dcr-debug.mjs', import.meta.url));
 
 function tmpDir(prefix = 'dcr-cli-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
